@@ -6,26 +6,29 @@ package com.ulb.code.wit.main
 
 import org.apache.spark._
 import org.apache.spark.graphx._
-// To make some of the examples work we will also need RDD
 import org.apache.spark.rdd.RDD
 import com.ulb.code.wit.util._
 import org.apache.log4j.Logger
 import org.apache.log4j.Level
 import scala.io.Source
+import scala.util.control.Breaks.break
+import scala.collection.mutable.HashMap
 object TestGraph {
+
+  val num_buckets = 256
+  val distance = 3
+  val batch = 1000
   def main(args: Array[String]) {
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
     val conf = new SparkConf().setAppName("NeighborhoodProfile").setMaster("local[*]")
     val sc = new SparkContext(conf)
-    val num_buckets = 256
-    val distance = 3
 
     var line = ""
     var node1 = 0L
     var node2 = 0L
     var time = 0L
-    val isFirst = true
+    var isFirst = true
     var initialVertexArray: Array[(Long, (Long, NodeApprox))] = null
     var initialEdgeArray: Array[Edge[Long]] = null
     var users: RDD[(VertexId, (Long, NodeApprox))] = null
@@ -36,61 +39,73 @@ object TestGraph {
     var msg2: PropogationObjectApprox = null
     var outputgraph: Graph[(Long, NodeApprox), Long] = null
     var count = 0
-    for (line <- Source.fromFile("./data//facebook_reduced.csv").getLines()) {
+    var edges = collection.mutable.Map[(Long, Long), Long]()
+    var nodes = collection.mutable.Set[Long]()
+    for (line <- Source.fromFile("./data/fb1.csv").getLines()) {
       val tmp = line.split(",")
-      node1 = tmp(0).toLong
-      node2 = tmp(1).toLong
-      time = tmp(2).toLong
-      if (count % 100 == 0) {
-        println("done " + count)
-      }
-      if (isFirst) {
-        initialVertexArray = Array((node1, (node1, new NodeApprox(distance, num_buckets))), (node2, (node2, new NodeApprox(distance, num_buckets))))
-        initialEdgeArray = Array(Edge(node1, node2, time), Edge(node2, node1, time))
-        users = sc.parallelize(initialVertexArray)
-        relationships = sc.parallelize(initialEdgeArray)
-        inputgraph = Graph(users, relationships)
 
-      } else {
-        val newVertexArray = Array((node1, (node1, new NodeApprox(distance, num_buckets))), (node2, (node2, new NodeApprox(distance, num_buckets))))
-        val newEdgeArray = Array(Edge(node1, node2, time), Edge(node2, node1, time))
+      count = count + 1
+      edges.put((tmp(0).toLong, tmp(1).toLong), tmp(2).toLong)
+      nodes.add(tmp(0).toLong)
+      nodes.add(tmp(1).toLong)
+      if (count == batch) {
 
-        var newusers: RDD[(VertexId, (Long, NodeApprox))] = sc.parallelize(newVertexArray)
-        val oldusers = inputgraph.vertices
-        //creating new user rdd by removing existing users in graph from the list of new users
-        newusers = newusers.leftOuterJoin(oldusers).filter(x => {
-          if (x._2._2 == None)
-            true
-          else
-            false
+        if (isFirst) {
 
-        }).map(x => (x._1, (x._1, x._2._1._2)))
-        users = oldusers.union(newusers)
-
-        //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
-        val newrelationships: RDD[Edge[Long]] = sc.parallelize(newEdgeArray)
-        val oldrelationships = inputgraph.edges.filter { x =>
-          {
-            if (((x.srcId == node1) & (x.dstId == node2)) || ((x.srcId == node2) & (x.dstId == node1))) {
-              false
-            } else
-              true
+          for (node1 <- nodes.iterator) {
+            initialVertexArray ++ Array((node1, (node1, new NodeApprox(distance, num_buckets))))
           }
+          for (((node1, node2), time) <- edges.seq.iterator) {
+            initialEdgeArray = Array(Edge(node1, node2, time), Edge(node2, node1, time))
+          }
+          println("initialvertex : " + initialVertexArray.length + " : " + nodes.size)
+          println("initialvertex : " + initialEdgeArray.length)
+          users = sc.parallelize(initialVertexArray)
+          relationships = sc.parallelize(initialEdgeArray)
+          inputgraph = Graph(users, relationships)
+          isFirst = false
+
+        } else {
+          val newVertexArray = Array((node1, (node1, new NodeApprox(distance, num_buckets))), (node2, (node2, new NodeApprox(distance, num_buckets))))
+          val newEdgeArray = Array(Edge(node1, node2, time), Edge(node2, node1, time))
+
+          var newusers: RDD[(VertexId, (Long, NodeApprox))] = sc.parallelize(newVertexArray)
+          val oldusers = inputgraph.vertices
+          //creating new user rdd by removing existing users in graph from the list of new users
+          newusers = newusers.leftOuterJoin(oldusers).filter(x => {
+            if (x._2._2 == None)
+              true
+            else
+              false
+
+          }).map(x => (x._1, (x._1, x._2._1._2)))
+          users = oldusers.union(newusers)
+
+          //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
+          val newrelationships: RDD[Edge[Long]] = sc.parallelize(newEdgeArray)
+          val oldrelationships = inputgraph.edges.filter { x =>
+            {
+              if (((x.srcId == node1) & (x.dstId == node2)) || ((x.srcId == node2) & (x.dstId == node1))) {
+                false
+              } else
+                true
+            }
+          }
+
+          relationships = oldrelationships.union(newrelationships)
+          inputgraph = Graph(users, relationships)
+
         }
 
-        relationships = oldrelationships.union(newrelationships)
-        inputgraph = Graph(users, relationships)
-
+        msg1 = new PropogationObjectApprox(node1, node2, new SlidingHLL(num_buckets), node1, 0)
+        msg2 = new PropogationObjectApprox(node2, node1, new SlidingHLL(num_buckets), node2, 0)
+        inputgraph = Pregel(inputgraph, (0, Array(msg1, msg2)), distance)(vertexProgram, sendMessage, messageCombiner)
+        nodes = nodes.empty
       }
 
-      msg1 = new PropogationObjectApprox(node1, node2, new SlidingHLL(num_buckets), node1, 0)
-      msg2 = new PropogationObjectApprox(node2, node1, new SlidingHLL(num_buckets), node2, 0)
-      inputgraph = Pregel(inputgraph, (0, Array(msg1, msg2)), distance)(vertexProgram, sendMessage, messageCombiner)
-      count = count + 1
-    }
-
-    inputgraph.vertices.collect.foreach {
-      case (vertexId, (value, original_value)) => println("node summary for " + value + " : " + original_value.getNodeSummary.estimate())
+      inputgraph.vertices.collect.foreach {
+        case (vertexId, (value, original_value)) => println("node summary for " + value + " : " + original_value.getNodeSummary.estimate())
+      }
     }
     //    initialVertexArray = Array((1L, (1L, new NodeApprox(distance, num_buckets))), (2L, (2L, new NodeApprox(distance, num_buckets))))
     //    initialEdgeArray = Array(Edge(1L, 2L, 1L), Edge(2L, 1L, 1L))
