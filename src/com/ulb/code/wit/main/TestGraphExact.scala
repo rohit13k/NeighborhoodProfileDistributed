@@ -33,11 +33,11 @@ object TestGraphExact {
     var node2 = 0L
     var time = 0L
     var isFirst = true
-    var inputVertexArray: Array[(Long, (Long, Array[collection.mutable.Map[Long, Long]]))] = null
+    var inputVertexArray: Array[(Long, (Long, Int, Array[collection.mutable.Map[Long, Long]]))] = null
     var inputEdgeArray: Array[Edge[Long]] = null
-    var users: RDD[(VertexId, (Long, Array[collection.mutable.Map[Long, Long]]))] = null
+    var users: RDD[(VertexId, (Long, Int, Array[collection.mutable.Map[Long, Long]]))] = null
     var relationships: RDD[Edge[Long]] = null
-    var graph: Graph[(Long, Array[collection.mutable.Map[Long, Long]]), Long] = null
+    var graph: Graph[(Long, Int, Array[collection.mutable.Map[Long, Long]]), Long] = null
 
     var count = 0
     var edges = collection.mutable.Map[(Long, Long), Long]()
@@ -56,9 +56,9 @@ object TestGraphExact {
         //creating vertext RDD from input 
         for (node1 <- nodes.iterator) {
           if (inputVertexArray == null) {
-            inputVertexArray = Array((node1, (node1, new Array[collection.mutable.Map[Long, Long]](3))))
+            inputVertexArray = Array((node1, (node1, 0, new Array[collection.mutable.Map[Long, Long]](3))))
           } else {
-            inputVertexArray = inputVertexArray ++ Array((node1, (node1, new Array[collection.mutable.Map[Long, Long]](3))))
+            inputVertexArray = inputVertexArray ++ Array((node1, (node1, 0, new Array[collection.mutable.Map[Long, Long]](3))))
           }
 
         }
@@ -84,7 +84,7 @@ object TestGraphExact {
 
         } else {
 
-          var newusers: RDD[(VertexId, (Long, Array[collection.mutable.Map[Long, Long]]))] = sc.parallelize(inputVertexArray)
+          var newusers: RDD[(VertexId, (Long, Int, Array[collection.mutable.Map[Long, Long]]))] = sc.parallelize(inputVertexArray)
           val oldusers = graph.vertices
           //creating new user rdd by removing existing users in graph from the list of new users
           newusers = newusers.leftOuterJoin(oldusers).filter(x => {
@@ -93,7 +93,7 @@ object TestGraphExact {
             else
               false
 
-          }).map(x => (x._1, (x._1, x._2._1._2)))
+          }).map(x => (x._1, (x._1, x._2._1._2, x._2._1._3)))
           users = oldusers.union(newusers)
 
           //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
@@ -124,7 +124,7 @@ object TestGraphExact {
      * 
      */
     graph.vertices.collect.foreach {
-      case (vertexId, (value, original_value)) => {
+      case (vertexId, (value, step, original_value)) => {
         //        println("node summary for " + value + " : " + original_value.getNodeSummary.estimate())
         var total = collection.mutable.Set[Long]()
         original_value.foreach {
@@ -140,7 +140,7 @@ object TestGraphExact {
 
   }
 
-  def vertexProgram(id: VertexId, value: (Long, Array[collection.mutable.Map[Long, Long]]), msgSum: (Int, Array[(Long, Long, Long)])): (Long, Array[collection.mutable.Map[Long, Long]]) = {
+  def vertexProgram(id: VertexId, value: (Long, Int, Array[collection.mutable.Map[Long, Long]]), msgSum: (Int, Array[(Long, Long, Long)])): (Long, Int, Array[collection.mutable.Map[Long, Long]]) = {
 
     //if inital msg
     if (msgSum._1 == 0) {
@@ -154,7 +154,7 @@ object TestGraphExact {
   }
   def messageCombiner(msg1: (Int, Array[(Long, Long, Long)]), msg2: (Int, Array[(Long, Long, Long)])): (Int, Array[(Long, Long, Long)]) = (msg1._1, msg1._2 ++ msg2._2)
 
-  def sendMessage(triplet: EdgeTriplet[(Long, Array[collection.mutable.Map[Long, Long]]), Long]): Iterator[(VertexId, (Int, Array[(Long, Long, Long)]))] = {
+  def sendMessage(triplet: EdgeTriplet[(Long, Int, Array[collection.mutable.Map[Long, Long]]), Long]): Iterator[(VertexId, (Int, Array[(Long, Long, Long)]))] = {
 
     Iterator.empty
 
