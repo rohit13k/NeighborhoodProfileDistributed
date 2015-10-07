@@ -17,15 +17,15 @@ import java.io.{ File, FileWriter, BufferedWriter }
 import java.util.Date
 object TestGraphExact {
 
-  val distance = 3
-  val batch = 1000
+  val distance = 4
+  val batch = 5
   def main(args: Array[String]) {
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
     val conf = new SparkConf().setAppName("NeighborhoodProfile").setMaster("local[*]")
     val sc = new SparkContext(conf)
-    val inputfile = "facebook_reduced.csv"
-    val outputFile = "facebook_reduced.csv"
+    val inputfile = "simple.csv"
+    val outputFile = "simple_out.csv"
     val folder = ".//data//"
     var line = ""
     var output = new StringBuilder
@@ -33,11 +33,11 @@ object TestGraphExact {
     var node2 = 0L
     var time = 0L
     var isFirst = true
-    var inputVertexArray: Array[(Long, (Long, Int, Array[collection.mutable.Map[Long, Long]]))] = null
+    var inputVertexArray: Array[(Long, NodeExact)] = null
     var inputEdgeArray: Array[Edge[Long]] = null
-    var users: RDD[(VertexId, (Long, Int, Array[collection.mutable.Map[Long, Long]]))] = null
+    var users: RDD[(VertexId, NodeExact)] = null
     var relationships: RDD[Edge[Long]] = null
-    var graph: Graph[(Long, Int, Array[collection.mutable.Map[Long, Long]]), Long] = null
+    var graph: Graph[NodeExact, Long] = null
 
     var count = 0
     var edges = collection.mutable.Map[(Long, Long), Long]()
@@ -56,9 +56,9 @@ object TestGraphExact {
         //creating vertext RDD from input 
         for (node1 <- nodes.iterator) {
           if (inputVertexArray == null) {
-            inputVertexArray = Array((node1, (node1, 0, new Array[collection.mutable.Map[Long, Long]](3))))
+            inputVertexArray = Array((node1, new NodeExact(node1, new Array[collection.mutable.Map[Long, Long]](3))))
           } else {
-            inputVertexArray = inputVertexArray ++ Array((node1, (node1, 0, new Array[collection.mutable.Map[Long, Long]](3))))
+            inputVertexArray = inputVertexArray ++ Array((node1, new NodeExact(node1, new Array[collection.mutable.Map[Long, Long]](3))))
           }
 
         }
@@ -84,7 +84,7 @@ object TestGraphExact {
 
         } else {
 
-          var newusers: RDD[(VertexId, (Long, Int, Array[collection.mutable.Map[Long, Long]]))] = sc.parallelize(inputVertexArray)
+          var newusers: RDD[(VertexId, NodeExact)] = sc.parallelize(inputVertexArray)
           val oldusers = graph.vertices
           //creating new user rdd by removing existing users in graph from the list of new users
           newusers = newusers.leftOuterJoin(oldusers).filter(x => {
@@ -93,7 +93,7 @@ object TestGraphExact {
             else
               false
 
-          }).map(x => (x._1, (x._1, x._2._1._2, x._2._1._3)))
+          }).map(x => (x._1, new NodeExact(x._1, x._2._1.summary)))
           users = oldusers.union(newusers)
 
           //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
@@ -113,24 +113,90 @@ object TestGraphExact {
         } //end of else
 
         graph = graph.pregel((0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
-
+        var ver = graph.vertices.collect
         nodes = nodes.empty
       } //end of if
 
     } // end of for loop
+    if (count != 0) {
+
+      count = 0
+      //creating vertext RDD from input 
+      for (node1 <- nodes.iterator) {
+        if (inputVertexArray == null) {
+          inputVertexArray = Array((node1, new NodeExact(node1, new Array[collection.mutable.Map[Long, Long]](3))))
+        } else {
+          inputVertexArray = inputVertexArray ++ Array((node1, new NodeExact(node1, new Array[collection.mutable.Map[Long, Long]](3))))
+        }
+
+      }
+      //creating vertex RDD from input
+      for (((node1, node2), time) <- edges.seq.iterator) {
+        if (inputEdgeArray == null) {
+          inputEdgeArray = Array(Edge(node1, node2, time), Edge(node2, node1, time))
+        } else
+          inputEdgeArray = inputEdgeArray ++ Array(Edge(node1, node2, time), Edge(node2, node1, time))
+        if (msgs == null)
+          msgs = Array((node1, node2, time), (node2, node1, time))
+        else
+          msgs = msgs ++ Array((node1, node2, time), (node2, node1, time))
+      }
+      if (isFirst) {
+
+        println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
+        println("initialedge: " + inputEdgeArray.length)
+        users = sc.parallelize(inputVertexArray)
+        relationships = sc.parallelize(inputEdgeArray)
+        graph = Graph(users, relationships)
+        isFirst = false
+
+      } else {
+
+        var newusers: RDD[(VertexId, NodeExact)] = sc.parallelize(inputVertexArray)
+        val oldusers = graph.vertices
+        //creating new user rdd by removing existing users in graph from the list of new users
+        newusers = newusers.leftOuterJoin(oldusers).filter(x => {
+          if (x._2._2 == None)
+            true
+          else
+            false
+
+        }).map(x => (x._1, new NodeExact(x._1, x._2._1.summary)))
+        users = oldusers.union(newusers)
+
+        //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
+        val newrelationships: RDD[Edge[Long]] = sc.parallelize(inputEdgeArray)
+        val oldrelationships = graph.edges.filter { x =>
+          {
+            if (((x.srcId == node1) & (x.dstId == node2)) || ((x.srcId == node2) & (x.dstId == node1))) {
+              false
+            } else
+              true
+          }
+        }
+
+        relationships = oldrelationships.union(newrelationships)
+        graph = Graph(users, relationships)
+
+      } //end of else
+
+      graph = graph.pregel((0, msgs), distance, EdgeDirection.Both)(vertexProgram, sendMessage, messageCombiner)
+
+      nodes = nodes.empty
+
+    }
     println("Time : " + (new Date().getTime - startime))
     /*
      * Print the output
      * 
      */
+    var ver = graph.vertices.collect
+
     graph.vertices.collect.foreach {
-      case (vertexId, (value, step, original_value)) => {
+      case (vertexId, node) => {
         //        println("node summary for " + value + " : " + original_value.getNodeSummary.estimate())
-        var total = collection.mutable.Set[Long]()
-        original_value.foreach {
-          value => total = total ++ value.keySet
-        }
-        output.append(value + "," + total.size + "\n")
+
+        output.append(node.node + "," + node.getsummary(0L) + "\n")
       }
     }
     val f = new File(folder + outputFile)
@@ -140,23 +206,53 @@ object TestGraphExact {
 
   }
 
-  def vertexProgram(id: VertexId, value: (Long, Int, Array[collection.mutable.Map[Long, Long]]), msgSum: (Int, Array[(Long, Long, Long)])): (Long, Int, Array[collection.mutable.Map[Long, Long]]) = {
+  def vertexProgram(id: VertexId, value: NodeExact, msgSum: (Int, Array[(Long, Long, Long)])): NodeExact = {
 
-    //if inital msg
-    if (msgSum._1 == 0) {
-      //reset the variables to clear last round data 
+    value.ischanged = false
+    if (msgSum._2.exists(_._1 == value.node)) {
 
-    } else {
-      //not initial msg
+      msgSum._2.foreach({
+        x =>
+          if (x._1 == value.node) {
+            if (value.summary(msgSum._1) != null) {
+              if (value.summary(msgSum._1).contains(x._2)) {
+                if (value.summary(msgSum._1).getOrElse((x._2), 0l) < x._3) {
+                  value.summary(msgSum._1).update(x._2, x._3)
+                  value.ischanged = true
+                }
+              } else {
+                value.summary(msgSum._1) += (x._2 -> x._3)
+                value.ischanged = true
+              }
+            } else {
+
+              value.summary.update(msgSum._1, collection.mutable.Map((x._2 -> x._3)))
+              value.ischanged = true
+            }
+          }
+      })
 
     }
+
+    value.currentsuperstep = msgSum._1
     value
   }
   def messageCombiner(msg1: (Int, Array[(Long, Long, Long)]), msg2: (Int, Array[(Long, Long, Long)])): (Int, Array[(Long, Long, Long)]) = (msg1._1, msg1._2 ++ msg2._2)
 
-  def sendMessage(triplet: EdgeTriplet[(Long, Int, Array[collection.mutable.Map[Long, Long]]), Long]): Iterator[(VertexId, (Int, Array[(Long, Long, Long)]))] = {
+  def sendMessage(triplet: EdgeTriplet[NodeExact, Long]): Iterator[(VertexId, (Int, Array[(Long, Long, Long)]))] = {
 
-    Iterator.empty
+    if (triplet.srcAttr.ischanged) {
+      var msg: Array[(Long, Long, Long)] = null
+      triplet.srcAttr.summary(triplet.srcAttr.currentsuperstep).seq.foreach({ x =>
+        if (msg == null & triplet.dstId != x._1) {
+          msg = Array((triplet.dstId, x._1, Math.min(x._2, triplet.attr)))
+        } else {
+          msg ++ Array((triplet.dstId, x._1, Math.min(x._2, triplet.attr)))
+        }
+      })
+      Iterator((triplet.dstId, (triplet.srcAttr.currentsuperstep + 1, msg)))
+    } else
+      Iterator.empty
 
   }
 
