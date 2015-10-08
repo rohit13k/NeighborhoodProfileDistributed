@@ -26,7 +26,7 @@ object TestGraph {
     val conf = new SparkConf().setAppName("NeighborhoodProfile").setMaster("local[*]")
     val sc = new SparkContext(conf)
     val inputfile = "facebook_reduced.csv"
-    val outputFile = "facebook_reduced.csv"
+    val outputFile = "facebook_reduced_estimate.csv"
     val folder = ".//data//"
     var line = ""
     var output = new StringBuilder
@@ -117,6 +117,74 @@ object TestGraph {
 
         nodes = nodes.empty
       } //end of if
+      if(count!=0){
+        
+        count = 0
+        //creating vertext RDD from input 
+        for (node1 <- nodes.iterator) {
+          if (inputVertexArray == null) {
+            inputVertexArray = Array((node1, (node1, new NodeApprox(distance, num_buckets))))
+          } else {
+            inputVertexArray = inputVertexArray ++ Array((node1, (node1, new NodeApprox(distance, num_buckets))))
+          }
+
+        }
+        //creating vertex RDD from input
+        for (((node1, node2), time) <- edges.seq.iterator) {
+          if (inputEdgeArray == null) {
+            inputEdgeArray = Array(Edge(node1, node2, time), Edge(node2, node1, time))
+          } else
+            inputEdgeArray = inputEdgeArray ++ Array(Edge(node1, node2, time), Edge(node2, node1, time))
+          if (msgs == null)
+            msgs = Array((new PropogationObjectApprox(node1, node2, null, node1, 0)), (new PropogationObjectApprox(node2, node1, null, node2, 0)))
+          else
+            msgs = msgs ++ Array((new PropogationObjectApprox(node1, node2, null, node1, 0)), (new PropogationObjectApprox(node2, node1, null, node2, 0)))
+        }
+        if (isFirst) {
+
+          println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
+          println("initialvertex : " + inputEdgeArray.length)
+          users = sc.parallelize(inputVertexArray)
+          relationships = sc.parallelize(inputEdgeArray)
+          graph = Graph(users, relationships)
+          isFirst = false
+
+        } else {
+
+          var newusers: RDD[(VertexId, (Long, NodeApprox))] = sc.parallelize(inputVertexArray)
+          val oldusers = graph.vertices
+          //creating new user rdd by removing existing users in graph from the list of new users
+          newusers = newusers.leftOuterJoin(oldusers).filter(x => {
+            if (x._2._2 == None)
+              true
+            else
+              false
+
+          }).map(x => (x._1, (x._1, x._2._1._2)))
+          users = oldusers.union(newusers)
+
+          //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
+          val newrelationships: RDD[Edge[Long]] = sc.parallelize(inputEdgeArray)
+          val oldrelationships = graph.edges.filter { x =>
+            {
+              if (((x.srcId == node1) & (x.dstId == node2)) || ((x.srcId == node2) & (x.dstId == node1))) {
+                false
+              } else
+                true
+            }
+          }
+
+          relationships = oldrelationships.union(newrelationships)
+          graph = Graph(users, relationships)
+
+        } //end of else
+
+        graph = graph.pregel((0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+
+        nodes = nodes.empty
+      
+        
+      }
 
     } // end of for loop
     println("Time : " + (new Date().getTime - startime))

@@ -19,6 +19,7 @@ object TestGraphExact {
 
   val distance = 4
   val batch = 5
+  var graph: Graph[NodeExact, Long] = null
   def main(args: Array[String]) {
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
@@ -37,7 +38,6 @@ object TestGraphExact {
     var inputEdgeArray: Array[Edge[Long]] = null
     var users: RDD[(VertexId, NodeExact)] = null
     var relationships: RDD[Edge[Long]] = null
-    var graph: Graph[NodeExact, Long] = null
 
     var count = 0
     var edges = collection.mutable.Map[(Long, Long), Long]()
@@ -180,7 +180,7 @@ object TestGraphExact {
 
       } //end of else
 
-      graph = graph.pregel((0, msgs), distance, EdgeDirection.Both)(vertexProgram, sendMessage, messageCombiner)
+      graph = graph.pregel((0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
 
       nodes = nodes.empty
 
@@ -244,10 +244,12 @@ object TestGraphExact {
     if (triplet.srcAttr.ischanged) {
       var msg: Array[(Long, Long, Long)] = null
       triplet.srcAttr.summary(triplet.srcAttr.currentsuperstep).seq.foreach({ x =>
-        if (msg == null & triplet.dstId != x._1) {
-          msg = Array((triplet.dstId, x._1, Math.min(x._2, triplet.attr)))
-        } else {
-          msg ++ Array((triplet.dstId, x._1, Math.min(x._2, triplet.attr)))
+        if (triplet.dstId != x._1) {
+          if (msg == null) {
+            msg = Array((triplet.dstId, x._1, Math.min(x._2, triplet.attr)))
+          } else {
+            msg ++ Array((triplet.dstId, x._1, Math.min(x._2, triplet.attr)))
+          }
         }
       })
       Iterator((triplet.dstId, (triplet.srcAttr.currentsuperstep + 1, msg)))
