@@ -295,19 +295,9 @@ object TestGraphExact {
         // get to send messages. We must cache messages so it can be materialized on the next line,
         // allowing us to uncache the previous iteration.
         var Rver = g.vertices.collect()
-
         var Rtrip = g.triplets.collect()
         var Redge = g.edges.collect()
-        g.triplets.map { et =>
-          val et2 = new EdgeTriplet[VD, ED] // Replace VD and ED with the correct types 
-          et2.srcId = et.srcId
-          et2.dstId = et.dstId
-          et2.attr = et.attr
-          et2.srcAttr = et.srcAttr
-          et2.dstAttr = et.dstAttr
-          et2
-        }
-        Rtrip = g.triplets.collect()
+     
         messages = g.mapReduceTriplets(sendMsg, mergeMsg, Some((newVerts, activeDirection))).cache()
         // The call to count() materializes `messages`, `newVerts`, and the vertices of `g`. This
         // hides oldMessages (depended on by newVerts), newVerts (depended on by messages), and the
