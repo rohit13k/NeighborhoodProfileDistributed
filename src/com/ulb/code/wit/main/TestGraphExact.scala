@@ -17,11 +17,13 @@ import scala.collection.mutable.HashMap
 import java.io.{ File, FileWriter, BufferedWriter }
 import java.util.Date
 import scala.reflect.ClassTag
+import org.apache.spark.storage.StorageLevel
 object TestGraphExact {
 
-  val distance = 4
-  val batch = 5
+  val distance = 2
+  val batch = 10
   var graph: Graph[NodeExact, Long] = null
+  var superstep = 0
   def main(args: Array[String]) {
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
@@ -64,11 +66,13 @@ object TestGraphExact {
           }
 
         }
-        //creating vertex RDD from input
+        //creating Edge RDD from input
         for (((node1, node2), time) <- edges.seq.iterator) {
           if (inputEdgeArray == null) {
             inputEdgeArray = Array(Edge(node1, node2, time), Edge(node2, node1, time))
+            //            inputEdgeArray = Array(Edge(node1, node2, time))
           } else
+            //            inputEdgeArray = inputEdgeArray ++ Array(Edge(node1, node2, time))
             inputEdgeArray = inputEdgeArray ++ Array(Edge(node1, node2, time), Edge(node2, node1, time))
           if (msgs == null)
             msgs = Array((node1, node2, time), (node2, node1, time))
@@ -182,7 +186,7 @@ object TestGraphExact {
 
       } //end of else
 
-      graph = preg(graph, (0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+      graph = Pregel(graph, (0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
 
       nodes = nodes.empty
 
@@ -268,9 +272,13 @@ object TestGraphExact {
                                                                                                            mergeMsg: (A, A) => A): Graph[VD, ED] =
     {
       var g = graph.mapVertices((vid, vdata) => vprog(vid, vdata, initialMsg)).cache()
+
       // compute the messages
       var messages = g.mapReduceTriplets(sendMsg, mergeMsg)
       var activeMessages = messages.count()
+      var Rver = g.vertices.collect()
+      var Redge = g.edges.collect()
+      var Rtrip = g.triplets.collect()
       // Loop
       var prevG: Graph[VD, ED] = null
       var i = 0
@@ -281,11 +289,25 @@ object TestGraphExact {
         prevG = g
         g = g.outerJoinVertices(newVerts) { (vid, old, newOpt) => newOpt.getOrElse(old) }
         g.cache()
-        var ver = g.vertices.collect
+
         val oldMessages = messages
         // Send new messages. Vertices that didn't get any messages don't appear in newVerts, so don't
         // get to send messages. We must cache messages so it can be materialized on the next line,
         // allowing us to uncache the previous iteration.
+        var Rver = g.vertices.collect()
+
+        var Rtrip = g.triplets.collect()
+        var Redge = g.edges.collect()
+        g.triplets.map { et =>
+          val et2 = new EdgeTriplet[VD, ED] // Replace VD and ED with the correct types 
+          et2.srcId = et.srcId
+          et2.dstId = et.dstId
+          et2.attr = et.attr
+          et2.srcAttr = et.srcAttr
+          et2.dstAttr = et.dstAttr
+          et2
+        }
+        Rtrip = g.triplets.collect()
         messages = g.mapReduceTriplets(sendMsg, mergeMsg, Some((newVerts, activeDirection))).cache()
         // The call to count() materializes `messages`, `newVerts`, and the vertices of `g`. This
         // hides oldMessages (depended on by newVerts), newVerts (depended on by messages), and the
