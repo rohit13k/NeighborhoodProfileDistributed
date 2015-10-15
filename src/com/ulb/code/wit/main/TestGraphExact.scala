@@ -18,20 +18,36 @@ import java.io.{ File, FileWriter, BufferedWriter }
 import java.util.Date
 import scala.reflect.ClassTag
 import org.apache.spark.storage.StorageLevel
+import java.util.Properties
+import java.io.FileInputStream
+import scala.util.{ Failure, Try }
 object TestGraphExact {
 
-  val distance = 2
-  val batch = 10
-  var graph: Graph[NodeExact, Long] = null
-  var superstep = 0
   def main(args: Array[String]) {
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
     val conf = new SparkConf().setAppName("NeighborhoodProfile").setMaster("local[*]")
     val sc = new SparkContext(conf)
-    val inputfile = "simple.csv"
-    val outputFile = "simple_out.csv"
-    val folder = ".//data//"
+    val configFile = args(0).toString
+    if (configFile.startsWith("--config=")) {
+      val filePath = configFile.split("[=]")(1)
+      Try(ConfigUtil.load(filePath)) match {
+        case Failure(e) =>
+          println(s"\n\nERROR: Could not load config file $filePath. Please specify a valid config file.\n\n $e")
+          System.exit(0)
+        case _ =>
+      }
+    } else {
+      println("\n\nERROR: Invalid arguments!\n\nSyntax: com.sbs.PersonIdTool --config=<path-to-application.conf>\n\n")
+      System.exit(0)
+    }
+
+    val inputfile = ConfigUtil.get[String]("inputfile", "facebook_reduced.csv")
+    val outputFile = ConfigUtil.get[String]("outputFile", "facebook_reduced_estimate.csv")
+    val folder = ConfigUtil.get[String]("folder", ".//data//")
+
+    val distance = ConfigUtil.get[Int]("distance", 3)
+    val batch = ConfigUtil.get[Int]("batch", 1000)
     var line = ""
     var output = new StringBuilder
     var node1 = 0L
@@ -42,7 +58,7 @@ object TestGraphExact {
     var inputEdgeArray: Array[Edge[Long]] = null
     var users: RDD[(VertexId, NodeExact)] = null
     var relationships: RDD[Edge[Long]] = null
-
+    var graph: Graph[NodeExact, Long] = null
     var count = 0
     var edges = collection.mutable.Map[(Long, Long), Long]()
     var nodes = collection.mutable.Set[Long]()
@@ -118,7 +134,7 @@ object TestGraphExact {
 
         } //end of else
 
-        graph = preg(graph, (0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+        graph = PregelCorrected(graph, (0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
 
         nodes = nodes.empty
       } //end of if
@@ -186,7 +202,7 @@ object TestGraphExact {
 
       } //end of else
 
-      graph = Pregel(graph, (0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+      graph = PregelCorrected(graph, (0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
 
       nodes = nodes.empty
 
@@ -223,8 +239,12 @@ object TestGraphExact {
             if (value.summary(msgSum._1) != null) {
               if (value.summary(msgSum._1).contains(x._2)) {
                 if (value.summary(msgSum._1).getOrElse((x._2), 0l) < x._3) {
+                  //need to check if present in lower level
+
                   value.summary(msgSum._1).update(x._2, x._3)
                   value.ischanged = true
+                  //need to remove from upper if present at later horizon
+
                 }
               } else {
                 value.summary(msgSum._1) += (x._2 -> x._3)
@@ -250,71 +270,22 @@ object TestGraphExact {
     if (triplet.srcAttr.ischanged) {
       var msg: Array[(Long, Long, Long)] = null
       triplet.srcAttr.summary(triplet.srcAttr.currentsuperstep).seq.foreach({ x =>
+
         if (triplet.dstId != x._1) {
           if (msg == null) {
             msg = Array((triplet.dstId, x._1, Math.min(x._2, triplet.attr)))
           } else {
-            msg ++ Array((triplet.dstId, x._1, Math.min(x._2, triplet.attr)))
+            msg = msg ++ Array((triplet.dstId, x._1, Math.min(x._2, triplet.attr)))
           }
         }
       })
-      Iterator((triplet.dstId, (triplet.srcAttr.currentsuperstep + 1, msg)))
+      if (msg == null) {
+        Iterator.empty
+      } else
+        Iterator((triplet.dstId, (triplet.srcAttr.currentsuperstep + 1, msg)))
     } else
       Iterator.empty
 
   }
 
-  def preg[VD: ClassTag, ED: ClassTag, A: ClassTag](graph: Graph[VD, ED],
-                                                    initialMsg: A,
-                                                    maxIterations: Int = Int.MaxValue,
-                                                    activeDirection: EdgeDirection = EdgeDirection.Either)(vprog: (VertexId, VD, A) => VD,
-                                                                                                           sendMsg: EdgeTriplet[VD, ED] => Iterator[(VertexId, A)],
-                                                                                                           mergeMsg: (A, A) => A): Graph[VD, ED] =
-    {
-      var g = graph.mapVertices((vid, vdata) => vprog(vid, vdata, initialMsg)).cache()
-
-      // compute the messages
-      var messages = g.mapReduceTriplets(sendMsg, mergeMsg)
-      var activeMessages = messages.count()
-      var Rver = g.vertices.collect()
-      var Redge = g.edges.collect()
-      var Rtrip = g.triplets.collect()
-      // Loop
-      var prevG: Graph[VD, ED] = null
-      var i = 0
-      while (activeMessages > 0 && i < maxIterations) {
-        // Receive the messages. Vertices that didn't get any messages do not appear in newVerts.
-        val newVerts = g.vertices.innerJoin(messages)(vprog).cache()
-        // Update the graph with the new vertices.
-        prevG = g
-        g = g.outerJoinVertices(newVerts) { (vid, old, newOpt) => newOpt.getOrElse(old) }
-        g.cache()
-
-        val oldMessages = messages
-        // Send new messages. Vertices that didn't get any messages don't appear in newVerts, so don't
-        // get to send messages. We must cache messages so it can be materialized on the next line,
-        // allowing us to uncache the previous iteration.
-        var Rver = g.vertices.collect()
-        var Rtrip = g.triplets.collect()
-        var Redge = g.edges.collect()
-     
-        messages = g.mapReduceTriplets(sendMsg, mergeMsg, Some((newVerts, activeDirection))).cache()
-        // The call to count() materializes `messages`, `newVerts`, and the vertices of `g`. This
-        // hides oldMessages (depended on by newVerts), newVerts (depended on by messages), and the
-        // vertices of prevG (depended on by newVerts, oldMessages, and the vertices of g).
-        activeMessages = messages.count()
-
-        println("Pregel finished iteration " + i)
-
-        // Unpersist the RDDs hidden by newly-materialized RDDs
-        oldMessages.unpersist(blocking = false)
-        newVerts.unpersist(blocking = false)
-        prevG.unpersistVertices(blocking = false)
-        prevG.edges.unpersist(blocking = false)
-        // count the iteration
-        i += 1
-      }
-
-      g
-    }
 }

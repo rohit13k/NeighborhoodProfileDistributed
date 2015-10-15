@@ -18,7 +18,7 @@ class NodeExact(nodeId: Long, summ: Array[collection.mutable.Map[Long, Long]]) e
       if (temp == null)
         temp = sum(i).keySet
       else
-        temp ++ sum(i).keySet
+        temp=temp ++ sum(i).keySet
     }
     return temp.size
   }

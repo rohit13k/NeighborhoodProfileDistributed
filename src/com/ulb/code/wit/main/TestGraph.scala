@@ -15,19 +15,36 @@ import scala.util.control.Breaks.break
 import scala.collection.mutable.HashMap
 import java.io.{ File, FileWriter, BufferedWriter }
 import java.util.Date
+
+import scala.util.{ Failure, Try }
 object TestGraph {
 
-  val num_buckets = 256
-  val distance = 3
-  val batch = 1000
   def main(args: Array[String]) {
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
+    val configFile = args(0).toString
+    if (configFile.startsWith("--config=")) {
+      val filePath = configFile.split("[=]")(1)
+      Try(ConfigUtil.load(filePath)) match {
+        case Failure(e) =>
+          println(s"\n\nERROR: Could not load config file $filePath. Please specify a valid config file.\n\n $e")
+          System.exit(0)
+        case _ =>
+      }
+    } else {
+      println("\n\nERROR: Invalid arguments!\n\nSyntax: com.sbs.PersonIdTool --config=<path-to-application.conf>\n\n")
+      System.exit(0)
+    }
     val conf = new SparkConf().setAppName("NeighborhoodProfile").setMaster("local[*]")
     val sc = new SparkContext(conf)
-    val inputfile = "facebook_reduced.csv"
-    val outputFile = "facebook_reduced_estimate.csv"
-    val folder = ".//data//"
+    val inputfile = ConfigUtil.get[String]("inputfile", "facebook_reduced.csv")
+    val outputFile = ConfigUtil.get[String]("outputFile", "facebook_reduced_estimate.csv")
+    val folder = ConfigUtil.get[String]("folder", ".//data//")
+    val num_buckets = ConfigUtil.get[Int]("number_of_bucket", 256)
+    val distance = ConfigUtil.get[Int]("distance", 3)
+    val batch = ConfigUtil.get[Int]("batch", 1000)
+
+    val itteration = distance - 1
     var line = ""
     var output = new StringBuilder
     var node1 = 0L
@@ -77,7 +94,7 @@ object TestGraph {
         if (isFirst) {
 
           println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
-          println("initialvertex : " + inputEdgeArray.length)
+          println("initialedge : " + inputEdgeArray.length)
           users = sc.parallelize(inputVertexArray)
           relationships = sc.parallelize(inputEdgeArray)
           graph = Graph(users, relationships)
@@ -113,80 +130,81 @@ object TestGraph {
 
         } //end of else
 
-        graph = graph.pregel((0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+        //        graph = graph.pregel((0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+        graph = PregelCorrected(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
 
         nodes = nodes.empty
       } //end of if
-      if(count!=0){
-        
-        count = 0
-        //creating vertext RDD from input 
-        for (node1 <- nodes.iterator) {
-          if (inputVertexArray == null) {
-            inputVertexArray = Array((node1, (node1, new NodeApprox(distance, num_buckets))))
-          } else {
-            inputVertexArray = inputVertexArray ++ Array((node1, (node1, new NodeApprox(distance, num_buckets))))
-          }
-
-        }
-        //creating vertex RDD from input
-        for (((node1, node2), time) <- edges.seq.iterator) {
-          if (inputEdgeArray == null) {
-            inputEdgeArray = Array(Edge(node1, node2, time), Edge(node2, node1, time))
-          } else
-            inputEdgeArray = inputEdgeArray ++ Array(Edge(node1, node2, time), Edge(node2, node1, time))
-          if (msgs == null)
-            msgs = Array((new PropogationObjectApprox(node1, node2, null, node1, 0)), (new PropogationObjectApprox(node2, node1, null, node2, 0)))
-          else
-            msgs = msgs ++ Array((new PropogationObjectApprox(node1, node2, null, node1, 0)), (new PropogationObjectApprox(node2, node1, null, node2, 0)))
-        }
-        if (isFirst) {
-
-          println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
-          println("initialvertex : " + inputEdgeArray.length)
-          users = sc.parallelize(inputVertexArray)
-          relationships = sc.parallelize(inputEdgeArray)
-          graph = Graph(users, relationships)
-          isFirst = false
-
-        } else {
-
-          var newusers: RDD[(VertexId, (Long, NodeApprox))] = sc.parallelize(inputVertexArray)
-          val oldusers = graph.vertices
-          //creating new user rdd by removing existing users in graph from the list of new users
-          newusers = newusers.leftOuterJoin(oldusers).filter(x => {
-            if (x._2._2 == None)
-              true
-            else
-              false
-
-          }).map(x => (x._1, (x._1, x._2._1._2)))
-          users = oldusers.union(newusers)
-
-          //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
-          val newrelationships: RDD[Edge[Long]] = sc.parallelize(inputEdgeArray)
-          val oldrelationships = graph.edges.filter { x =>
-            {
-              if (((x.srcId == node1) & (x.dstId == node2)) || ((x.srcId == node2) & (x.dstId == node1))) {
-                false
-              } else
-                true
-            }
-          }
-
-          relationships = oldrelationships.union(newrelationships)
-          graph = Graph(users, relationships)
-
-        } //end of else
-
-        graph = graph.pregel((0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
-
-        nodes = nodes.empty
-      
-        
-      }
 
     } // end of for loop
+    if (count != 0) {
+
+      count = 0
+      //creating vertext RDD from input 
+      for (node1 <- nodes.iterator) {
+        if (inputVertexArray == null) {
+          inputVertexArray = Array((node1, (node1, new NodeApprox(distance, num_buckets))))
+        } else {
+          inputVertexArray = inputVertexArray ++ Array((node1, (node1, new NodeApprox(distance, num_buckets))))
+        }
+
+      }
+      //creating vertex RDD from input
+      for (((node1, node2), time) <- edges.seq.iterator) {
+        if (inputEdgeArray == null) {
+          inputEdgeArray = Array(Edge(node1, node2, time), Edge(node2, node1, time))
+        } else
+          inputEdgeArray = inputEdgeArray ++ Array(Edge(node1, node2, time), Edge(node2, node1, time))
+        if (msgs == null)
+          msgs = Array((new PropogationObjectApprox(node1, node2, null, node1, 0)), (new PropogationObjectApprox(node2, node1, null, node2, 0)))
+        else
+          msgs = msgs ++ Array((new PropogationObjectApprox(node1, node2, null, node1, 0)), (new PropogationObjectApprox(node2, node1, null, node2, 0)))
+      }
+      if (isFirst) {
+
+        println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
+        println("initialedge : " + inputEdgeArray.length)
+        users = sc.parallelize(inputVertexArray)
+        relationships = sc.parallelize(inputEdgeArray)
+        graph = Graph(users, relationships)
+        isFirst = false
+
+      } else {
+
+        var newusers: RDD[(VertexId, (Long, NodeApprox))] = sc.parallelize(inputVertexArray)
+        val oldusers = graph.vertices
+        //creating new user rdd by removing existing users in graph from the list of new users
+        newusers = newusers.leftOuterJoin(oldusers).filter(x => {
+          if (x._2._2 == None)
+            true
+          else
+            false
+
+        }).map(x => (x._1, (x._1, x._2._1._2)))
+        users = oldusers.union(newusers)
+
+        //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
+        val newrelationships: RDD[Edge[Long]] = sc.parallelize(inputEdgeArray)
+        val oldrelationships = graph.edges.filter { x =>
+          {
+            if (((x.srcId == node1) & (x.dstId == node2)) || ((x.srcId == node2) & (x.dstId == node1))) {
+              false
+            } else
+              true
+          }
+        }
+
+        relationships = oldrelationships.union(newrelationships)
+        graph = Graph(users, relationships)
+
+      } //end of else
+
+      //        graph = graph.pregel((0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+      graph = PregelCorrected(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+
+      nodes = nodes.empty
+
+    }
     println("Time : " + (new Date().getTime - startime))
     /*
      * Print the output
