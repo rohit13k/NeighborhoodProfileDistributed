@@ -4,12 +4,9 @@ import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Date;
 
-import com.google.common.base.Preconditions;
 import com.ulb.code.wit.util.BucketAndHash;
 import com.ulb.code.wit.util.Element;
 import com.ulb.code.wit.util.ElementList;
-import com.ulb.code.wit.util.HyperLogLogUtil;
-
 
 import static com.ulb.code.wit.util.HyperLogLogUtil.computeHash;
 
@@ -33,10 +30,10 @@ public class SlidingHLL implements Serializable {
 	}
 
 	public SlidingHLL(int numberOfBuckets) {
-//		Preconditions.checkArgument(Numbers.isPowerOf2(numberOfBuckets),
-//				"numberOfBuckets must be a power of 2");
-//		Preconditions.checkArgument(numberOfBuckets > 0,
-//				"numberOfBuckets must be > 0");
+		// Preconditions.checkArgument(Numbers.isPowerOf2(numberOfBuckets),
+		// "numberOfBuckets must be a power of 2");
+		// Preconditions.checkArgument(numberOfBuckets > 0,
+		// "numberOfBuckets must be > 0");
 
 		buckets = new ArrayList<ElementList<Element>>(numberOfBuckets);
 		initializeBucket(numberOfBuckets);

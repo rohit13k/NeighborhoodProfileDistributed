@@ -26,8 +26,8 @@ object TestGraphExact {
   def main(args: Array[String]) {
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
-    val conf = new SparkConf().setAppName("NeighborhoodProfile").setMaster("local[*]")
-    val sc = new SparkContext(conf)
+    //    val sc = new SparkContext(new SparkConf().setAppName("NeighborhoodProfile").setMaster("local[*]"))
+
     val configFile = args(0).toString
     if (configFile.startsWith("--config=")) {
       val filePath = configFile.split("[=]")(1)
@@ -41,13 +41,24 @@ object TestGraphExact {
       println("\n\nERROR: Invalid arguments!\n\nSyntax: com.sbs.PersonIdTool --config=<path-to-application.conf>\n\n")
       System.exit(0)
     }
-
-    val inputfile = ConfigUtil.get[String]("inputfile", "facebook_reduced.csv")
-    val outputFile = ConfigUtil.get[String]("outputFile", "facebook_reduced_estimate.csv")
+    val mode = ConfigUtil.get[String]("mode", "cluster")
+    val conf = new SparkConf().setAppName("NeighbourHoodProfile")
+    conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+    conf.registerKryoClasses(Array(classOf[NodeExact]))
+    conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
+    conf.set("spark.executor.memory", "2g")
+    conf.set("spark.driver.memory", "2g")
+    if (mode.equals("local")) {
+      conf.setMaster("local[*]")
+    }
+    val sc = new SparkContext(conf)
+    val inputfile = ConfigUtil.get[String]("inputfile", "simple.csv")
+    val outputFile = ConfigUtil.get[String]("outputFile", "simple_out.csv")
     val folder = ConfigUtil.get[String]("folder", ".//data//")
 
     val distance = ConfigUtil.get[Int]("distance", 3)
     val batch = ConfigUtil.get[Int]("batch", 1000)
+    val itteration = distance - 1
     var line = ""
     var output = new StringBuilder
     var node1 = 0L
@@ -59,6 +70,7 @@ object TestGraphExact {
     var users: RDD[(VertexId, NodeExact)] = null
     var relationships: RDD[Edge[Long]] = null
     var graph: Graph[NodeExact, Long] = null
+    var total = 0
     var count = 0
     var edges = collection.mutable.Map[(Long, Long), Long]()
     var nodes = collection.mutable.Set[Long]()
@@ -66,13 +78,14 @@ object TestGraphExact {
     val startime = new Date().getTime
     for (line <- Source.fromFile(folder + inputfile).getLines()) {
       val tmp = line.split(",")
-
+      total = total + 1
       count = count + 1
       edges.put((tmp(0).toLong, tmp(1).toLong), tmp(2).toLong)
       nodes.add(tmp(0).toLong)
       nodes.add(tmp(1).toLong)
       if (count == batch) {
         count = 0
+
         //creating vertext RDD from input 
         for (node1 <- nodes.iterator) {
           if (inputVertexArray == null) {
@@ -97,8 +110,8 @@ object TestGraphExact {
         }
         if (isFirst) {
 
-          println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
-          println("initialvertex : " + inputEdgeArray.length)
+          //println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
+          //          println("initialvertex : " + inputEdgeArray.length)
           users = sc.parallelize(inputVertexArray)
           relationships = sc.parallelize(inputEdgeArray)
           graph = Graph(users, relationships)
@@ -134,9 +147,13 @@ object TestGraphExact {
 
         } //end of else
 
-        graph = PregelCorrected(graph, (0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+        graph = PregelCorrected(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
 
         nodes = nodes.empty
+        edges = edges.empty
+        inputEdgeArray = null
+        inputVertexArray = null
+        println("Done: " + total + " at : " + new Date())
       } //end of if
 
     } // end of for loop
@@ -165,8 +182,8 @@ object TestGraphExact {
       }
       if (isFirst) {
 
-        println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
-        println("initialedge: " + inputEdgeArray.length)
+        //        println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
+        //        println("initialedge: " + inputEdgeArray.length)
         users = sc.parallelize(inputVertexArray)
         relationships = sc.parallelize(inputEdgeArray)
         graph = Graph(users, relationships)
@@ -202,9 +219,16 @@ object TestGraphExact {
 
       } //end of else
 
-      graph = PregelCorrected(graph, (0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+      graph = PregelCorrected(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
 
       nodes = nodes.empty
+      edges = edges.empty
+      inputEdgeArray = null
+      inputVertexArray = null
+
+      users.unpersist(blocking = false)
+      relationships.unpersist(blocking = false)
+      println("Done: " + total + " at : " + new Date())
 
     }
     println("Time : " + (new Date().getTime - startime))
@@ -212,7 +236,6 @@ object TestGraphExact {
      * Print the output
      * 
      */
-    var ver = graph.vertices.collect
 
     graph.vertices.collect.foreach {
       case (vertexId, node) => {

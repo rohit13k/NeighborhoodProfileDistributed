@@ -5,6 +5,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.esotericsoftware.kryo.Kryo;
+import com.esotericsoftware.kryo.Serializer;
+import com.esotericsoftware.kryo.io.Input;
+import com.esotericsoftware.kryo.io.Output;
 import com.ulb.code.wit.main.SlidingHLL;
 import com.ulb.code.wit.util.*;
 
@@ -20,8 +24,6 @@ public class NodeApprox implements Serializable {
 	private int numberOfBucket = 256;
 	private boolean ischanged = false;
 
-
-
 	public NodeApprox(int distance, int numberOfBucket) {
 
 		this.numberOfBucket = numberOfBucket;
@@ -34,7 +36,7 @@ public class NodeApprox implements Serializable {
 
 	}
 
-	public synchronized SlidingHLL getNodeSummary() {
+	public SlidingHLL getNodeSummary() {
 		nodeSummary = new SlidingHLL(numberOfBucket);
 		SlidingHLL oldSummary;
 		int bucketNo = 0;

@@ -26,28 +26,32 @@ object PregelCorrected {
       var i = 0
       while (activeMessages > 0 && i < maxIterations) {
         // Receive the messages. Vertices that didn't get any messages do not appear in newVerts.
-        val newVerts = g.vertices.innerJoin(messages)(vprog).cache()
+        val newVerts = g.vertices.innerJoin(messages)(vprog).persist(StorageLevel.MEMORY_ONLY_SER)
         // Update the graph with the new vertices.
         prevG = g
+        //        val rnewVerts = newVerts.collect()
         g = g.outerJoinVertices(newVerts) { (vid, old, newOpt) => newOpt.getOrElse(old) }
+        //        g.cache()
+        //        val rvex = g.vertices.collect()
+        //        val rtrip = g.triplets.collect()
+        //creating new graph from the vertices and edges to fix triplet issue
+        g = Graph(g.vertices, g.edges)
         g.cache()
 
         val oldMessages = messages
+
         // Send new messages. Vertices that didn't get any messages don't appear in newVerts, so don't
         // get to send messages. We must cache messages so it can be materialized on the next line,
         // allowing us to uncache the previous iteration.
-        val Rvel = g.vertices
-        val Redge = g.edges
-        g = Graph(Rvel, Redge)
-        //        Rtrip = g.triplets.collect()
-        messages = g.mapReduceTriplets(sendMsg, mergeMsg, Some((newVerts, activeDirection))).cache()
+
+        messages = g.mapReduceTriplets(sendMsg, mergeMsg, Some((newVerts, activeDirection))).persist(StorageLevel.MEMORY_ONLY_SER)
+
         // The call to count() materializes `messages`, `newVerts`, and the vertices of `g`. This
         // hides oldMessages (depended on by newVerts), newVerts (depended on by messages), and the
         // vertices of prevG (depended on by newVerts, oldMessages, and the vertices of g).
         activeMessages = messages.count()
 
-        println("Pregel finished iteration " + i)
-
+        //        println("Pregel finished iteration " + i)
         // Unpersist the RDDs hidden by newly-materialized RDDs
         oldMessages.unpersist(blocking = false)
         newVerts.unpersist(blocking = false)

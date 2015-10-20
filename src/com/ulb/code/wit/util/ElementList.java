@@ -3,7 +3,7 @@ package com.ulb.code.wit.util;
 import java.io.Serializable;
 import java.util.ArrayList;
 
-public class ElementList<T> extends ArrayList<Element> implements Serializable {
+public class ElementList<T> extends ArrayList<Element> {
 
 	public Element getTopElement() {
 		return this.get(0);

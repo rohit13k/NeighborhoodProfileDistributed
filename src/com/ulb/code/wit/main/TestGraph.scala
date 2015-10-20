@@ -35,7 +35,17 @@ object TestGraph {
       println("\n\nERROR: Invalid arguments!\n\nSyntax: com.sbs.PersonIdTool --config=<path-to-application.conf>\n\n")
       System.exit(0)
     }
-    val conf = new SparkConf().setAppName("NeighborhoodProfile").setMaster("local[*]")
+    val mode = ConfigUtil.get[String]("mode", "cluster")
+    val conf = new SparkConf().setAppName("NeighbourHoodProfile")
+    conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+    conf.registerKryoClasses(Array(classOf[NodeApprox], classOf[SlidingHLL], classOf[Element], classOf[PropogationObjectApprox], classOf[BucketAndHash]))
+    conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
+    conf.set("spark.executor.memory", "2g")
+    conf.set("spark.driver.memory", "2g")
+    if (mode.equals("local")) {
+      conf.setMaster("local[*]")
+    }
+
     val sc = new SparkContext(conf)
     val inputfile = ConfigUtil.get[String]("inputfile", "facebook_reduced.csv")
     val outputFile = ConfigUtil.get[String]("outputFile", "facebook_reduced_estimate.csv")
@@ -56,7 +66,7 @@ object TestGraph {
     var users: RDD[(VertexId, (Long, NodeApprox))] = null
     var relationships: RDD[Edge[Long]] = null
     var graph: Graph[(Long, NodeApprox), Long] = null
-
+    var total = 0
     var count = 0
     var edges = collection.mutable.Map[(Long, Long), Long]()
     var nodes = collection.mutable.Set[Long]()
@@ -66,10 +76,12 @@ object TestGraph {
       val tmp = line.split(",")
 
       count = count + 1
+      total = total + 1
       edges.put((tmp(0).toLong, tmp(1).toLong), tmp(2).toLong)
       nodes.add(tmp(0).toLong)
       nodes.add(tmp(1).toLong)
       if (count == batch) {
+
         count = 0
         //creating vertext RDD from input 
         for (node1 <- nodes.iterator) {
@@ -93,11 +105,12 @@ object TestGraph {
         }
         if (isFirst) {
 
-          println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
-          println("initialedge : " + inputEdgeArray.length)
+          //          println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
+          //          println("initialedge : " + inputEdgeArray.length)
           users = sc.parallelize(inputVertexArray)
           relationships = sc.parallelize(inputEdgeArray)
           graph = Graph(users, relationships)
+
           isFirst = false
 
         } else {
@@ -134,6 +147,12 @@ object TestGraph {
         graph = PregelCorrected(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
 
         nodes = nodes.empty
+        edges = edges.empty
+        inputEdgeArray = null
+        inputVertexArray = null
+        users.unpersist(blocking = false)
+        relationships.unpersist(blocking = false)
+        println("Done: " + total + " at : " + new Date())
       } //end of if
 
     } // end of for loop
@@ -162,8 +181,8 @@ object TestGraph {
       }
       if (isFirst) {
 
-        println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
-        println("initialedge : " + inputEdgeArray.length)
+        //        println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
+        //        println("initialedge : " + inputEdgeArray.length)
         users = sc.parallelize(inputVertexArray)
         relationships = sc.parallelize(inputEdgeArray)
         graph = Graph(users, relationships)
@@ -203,9 +222,13 @@ object TestGraph {
       graph = PregelCorrected(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
 
       nodes = nodes.empty
+      edges = edges.empty
+      inputEdgeArray = null
+      inputVertexArray = null
+      println("Done: " + total + " at : " + new Date())
 
     }
-    println("Time : " + (new Date().getTime - startime))
+    println("Completed in time : " + (new Date().getTime - startime))
     /*
      * Print the output
      * 
