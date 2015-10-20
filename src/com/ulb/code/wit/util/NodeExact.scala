@@ -1,25 +1,37 @@
 package com.ulb.code.wit.util
 
+import it.unimi.dsi.fastutil.objects.ObjectArrays
+import it.unimi.dsi.fastutil.longs.Long2LongArrayMap
+
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet
+
 /**
  * @author Rohit
  */
-class NodeExact(nodeId: Long, summ: Array[collection.mutable.Map[Long, Long]]) extends Serializable {
+class NodeExact(nodeId: Long, summ: Array[Long2LongArrayMap]) extends Serializable {
   var node: Long = nodeId
   var currentsuperstep = 0
-  var summary: Array[collection.mutable.Map[Long, Long]] = summ
+
+  var summary: Array[Long2LongArrayMap] = summ
   var ischanged = false
   def getsummary(window: Long): Int = {
-    var i = 0
-    var sum = summary.clone()
-    sum=sum.filter({ p => p != null })
-    sum.foreach(f => f.filter { case (value, time) => time > window })
-    var temp: scala.collection.Set[Long] = null
-    for (i <- 0 to sum.length - 1) {
-      if (temp == null)
-        temp = sum(i).keySet
-      else
-        temp=temp ++ sum(i).keySet
+
+    var sum: LongOpenHashSet = new LongOpenHashSet()
+    for (i <- 0 until summary.length) {
+
+      val x = summary(i)
+      if (x != null) {
+        val iterator = x.keySet().iterator()
+        while (iterator.hasNext()) {
+          val value = iterator.nextLong()
+          if (x.get(value) > window) {
+            sum.add(value)
+
+          }
+        }
+      }
     }
-    return temp.size
+
+    return sum.size
   }
 }

@@ -232,4 +232,8 @@ public class SlidingHLL implements Serializable {
 		return alpha;
 	}
 
+	public static void main(String args[]) {
+
+		System.out.println(new SlidingHLL(1024).computeAlpha(16));
+	}
 }

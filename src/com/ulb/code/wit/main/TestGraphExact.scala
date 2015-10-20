@@ -21,6 +21,7 @@ import org.apache.spark.storage.StorageLevel
 import java.util.Properties
 import java.io.FileInputStream
 import scala.util.{ Failure, Try }
+import it.unimi.dsi.fastutil.longs.Long2LongArrayMap
 object TestGraphExact {
 
   def main(args: Array[String]) {
@@ -89,9 +90,9 @@ object TestGraphExact {
         //creating vertext RDD from input 
         for (node1 <- nodes.iterator) {
           if (inputVertexArray == null) {
-            inputVertexArray = Array((node1, new NodeExact(node1, new Array[collection.mutable.Map[Long, Long]](3))))
+            inputVertexArray = Array((node1, new NodeExact(node1, new Array[Long2LongArrayMap](3))))
           } else {
-            inputVertexArray = inputVertexArray ++ Array((node1, new NodeExact(node1, new Array[collection.mutable.Map[Long, Long]](3))))
+            inputVertexArray = inputVertexArray ++ Array((node1, new NodeExact(node1, new Array[Long2LongArrayMap](3))))
           }
 
         }
@@ -163,9 +164,9 @@ object TestGraphExact {
       //creating vertext RDD from input 
       for (node1 <- nodes.iterator) {
         if (inputVertexArray == null) {
-          inputVertexArray = Array((node1, new NodeExact(node1, new Array[collection.mutable.Map[Long, Long]](3))))
+          inputVertexArray = Array((node1, new NodeExact(node1, new Array[Long2LongArrayMap](3))))
         } else {
-          inputVertexArray = inputVertexArray ++ Array((node1, new NodeExact(node1, new Array[collection.mutable.Map[Long, Long]](3))))
+          inputVertexArray = inputVertexArray ++ Array((node1, new NodeExact(node1, new Array[Long2LongArrayMap](3))))
         }
 
       }
@@ -260,22 +261,23 @@ object TestGraphExact {
         x =>
           if (x._1 == value.node) {
             if (value.summary(msgSum._1) != null) {
-              if (value.summary(msgSum._1).contains(x._2)) {
-                if (value.summary(msgSum._1).getOrElse((x._2), 0l) < x._3) {
+              if (value.summary(msgSum._1).containsKey(x._2)) {
+                if (value.summary(msgSum._1).get(x._2) < x._3) {
                   //need to check if present in lower level
 
-                  value.summary(msgSum._1).update(x._2, x._3)
+                  value.summary(msgSum._1).put(x._2, x._3)
                   value.ischanged = true
                   //need to remove from upper if present at later horizon
 
                 }
               } else {
-                value.summary(msgSum._1) += (x._2 -> x._3)
+                value.summary(msgSum._1).put(x._2, x._3)
                 value.ischanged = true
               }
             } else {
-
-              value.summary.update(msgSum._1, collection.mutable.Map((x._2 -> x._3)))
+              val temp = new Long2LongArrayMap()
+              temp.put(x._2, x._3)
+              value.summary.update(msgSum._1, temp)
               value.ischanged = true
             }
           }
@@ -292,16 +294,21 @@ object TestGraphExact {
 
     if (triplet.srcAttr.ischanged) {
       var msg: Array[(Long, Long, Long)] = null
-      triplet.srcAttr.summary(triplet.srcAttr.currentsuperstep).seq.foreach({ x =>
 
-        if (triplet.dstId != x._1) {
+      val sum = triplet.srcAttr.summary(triplet.srcAttr.currentsuperstep)
+      val tempItertator = sum.keySet().iterator()
+      while (tempItertator.hasNext()) {
+        val value = tempItertator.nextLong()
+        val time = sum.get(value)
+        if (triplet.dstId != value) {
           if (msg == null) {
-            msg = Array((triplet.dstId, x._1, Math.min(x._2, triplet.attr)))
+            msg = Array((triplet.dstId, value, Math.min(time, triplet.attr)))
           } else {
-            msg = msg ++ Array((triplet.dstId, x._1, Math.min(x._2, triplet.attr)))
+            msg = msg ++ Array((triplet.dstId, value, Math.min(time, triplet.attr)))
           }
         }
-      })
+      }
+
       if (msg == null) {
         Iterator.empty
       } else
