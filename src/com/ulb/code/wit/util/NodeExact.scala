@@ -8,7 +8,7 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet
 /**
  * @author Rohit
  */
-class NodeExact(nodeId: Long, summ: Array[Long2LongArrayMap]) extends Serializable {
+ class NodeExact(nodeId: Long, summ: Array[Long2LongArrayMap]) extends Serializable {
   var node: Long = nodeId
   var currentsuperstep = 0
 
