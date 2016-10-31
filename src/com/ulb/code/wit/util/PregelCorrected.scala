@@ -17,49 +17,46 @@ object PregelCorrected {
     {
       var g = graph.mapVertices((vid, vdata) => vprog(vid, vdata, initialMsg)).cache()
 
-      // compute the messages
-      var messages = g.mapReduceTriplets(sendMsg, mergeMsg)
-      var activeMessages = messages.count()
-
-      // Loop
-      var prevG: Graph[VD, ED] = null
-      var i = 0
-      while (activeMessages > 0 && i < maxIterations) {
-        // Receive the messages. Vertices that didn't get any messages do not appear in newVerts.
-        val newVerts = g.vertices.innerJoin(messages)(vprog).persist(StorageLevel.MEMORY_ONLY_SER)
-        // Update the graph with the new vertices.
-        prevG = g
-        //        val rnewVerts = newVerts.collect()
-        g = g.outerJoinVertices(newVerts) { (vid, old, newOpt) => newOpt.getOrElse(old) }
-        //        g.cache()
-        //        val rvex = g.vertices.collect()
-        //        val rtrip = g.triplets.collect()
-        //creating new graph from the vertices and edges to fix triplet issue
-        g = Graph(g.vertices, g.edges)
-        g.cache()
-
-        val oldMessages = messages
-
-        // Send new messages. Vertices that didn't get any messages don't appear in newVerts, so don't
-        // get to send messages. We must cache messages so it can be materialized on the next line,
-        // allowing us to uncache the previous iteration.
-
-        messages = g.mapReduceTriplets(sendMsg, mergeMsg, Some((newVerts, activeDirection))).persist(StorageLevel.MEMORY_ONLY_SER)
-
-        // The call to count() materializes `messages`, `newVerts`, and the vertices of `g`. This
-        // hides oldMessages (depended on by newVerts), newVerts (depended on by messages), and the
-        // vertices of prevG (depended on by newVerts, oldMessages, and the vertices of g).
-        activeMessages = messages.count()
-
-        //        println("Pregel finished iteration " + i)
-        // Unpersist the RDDs hidden by newly-materialized RDDs
-        oldMessages.unpersist(blocking = false)
-        newVerts.unpersist(blocking = false)
-        prevG.unpersistVertices(blocking = false)
-        prevG.edges.unpersist(blocking = false)
-        // count the iteration
-        i += 1
-      }
+//      // compute the messages
+////      var messages = g.mapReduceTriplets(sendMsg, mergeMsg)
+//      var activeMessages = messages.count()
+//
+//      // Loop
+//      var prevG: Graph[VD, ED] = null
+//      var i = 0
+//      while (activeMessages > 0 && i < maxIterations) {
+//        // Receive the messages. Vertices that didn't get any messages do not appear in newVerts.
+//        val newVerts = g.vertices.innerJoin(messages)(vprog).cache()
+//        // Update the graph with the new vertices.
+//        prevG = g
+//        g = g.outerJoinVertices(newVerts) { (vid, old, newOpt) => newOpt.getOrElse(old) }
+//        g.cache()
+//
+//        val oldMessages = messages
+//        // Send new messages. Vertices that didn't get any messages don't appear in newVerts, so don't
+//        // get to send messages. We must cache messages so it can be materialized on the next line,
+//        // allowing us to uncache the previous iteration.
+////
+////        val Rvel = g.vertices
+////        val Redge = g.edges
+////        val trip = g.triplets.collect()
+////        g = Graph(Rvel, Redge)
+////        messages = g.mapReduceTriplets(sendMsg, mergeMsg, Some((newVerts, activeDirection))).cache()
+////        // The call to count() materializes `messages`, `newVerts`, and the vertices of `g`. This
+////        // hides oldMessages (depended on by newVerts), newVerts (depended on by messages), and the
+////        // vertices of prevG (depended on by newVerts, oldMessages, and the vertices of g).
+////        activeMessages = messages.count()
+////
+////        println("Pregel finished iteration " + i)
+//
+//        // Unpersist the RDDs hidden by newly-materialized RDDs
+//        oldMessages.unpersist(blocking = false)
+//        newVerts.unpersist(blocking = false)
+//        prevG.unpersistVertices(blocking = false)
+//        prevG.edges.unpersist(blocking = false)
+//        // count the iteration
+//        i += 1
+//      }
 
       g
     }

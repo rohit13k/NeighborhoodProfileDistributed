@@ -22,226 +22,259 @@ import java.util.Properties
 import java.io.FileInputStream
 import scala.util.{ Failure, Try }
 import it.unimi.dsi.fastutil.longs.Long2LongArrayMap
+import java.lang.Boolean
 object TestGraphExact {
 
+  val logger = Logger.getLogger(getClass().getName());
   def main(args: Array[String]) {
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
     //    val sc = new SparkContext(new SparkConf().setAppName("NeighborhoodProfile").setMaster("local[*]"))
+    val prop = new Properties()
+    try {
+      val configFile = args(0).toString
+      prop.load(new FileInputStream(configFile))
 
-    val configFile = args(0).toString
-    if (configFile.startsWith("--config=")) {
-      val filePath = configFile.split("[=]")(1)
-      Try(ConfigUtil.load(filePath)) match {
-        case Failure(e) =>
-          println(s"\n\nERROR: Could not load config file $filePath. Please specify a valid config file.\n\n $e")
-          System.exit(0)
-        case _ =>
+      logger.info("Test Started")
+      val mode = prop.getProperty("mode", "cluster")
+      val conf = new SparkConf().setAppName("NeighbourHoodProfileExact")
+//      conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+//      conf.registerKryoClasses(Array(classOf[NodeExact]))
+//      conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
+
+      if (mode.equals("local")) {
+        conf.setMaster("local[*]")
       }
-    } else {
-      println("\n\nERROR: Invalid arguments!\n\nSyntax: com.sbs.PersonIdTool --config=<path-to-application.conf>\n\n")
-      System.exit(0)
-    }
-    val mode = ConfigUtil.get[String]("mode", "cluster")
-    val conf = new SparkConf().setAppName("NeighbourHoodProfile")
-    conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-    conf.registerKryoClasses(Array(classOf[NodeExact]))
-    conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
-    conf.set("spark.executor.memory", "2g")
-    conf.set("spark.driver.memory", "2g")
-    if (mode.equals("local")) {
-      conf.setMaster("local[6]")
-    }
-    val sc = new SparkContext(conf)
-    val inputfile = ConfigUtil.get[String]("inputfile", "simple.csv")
-    val outputFile = ConfigUtil.get[String]("outputFile", "simple_out.csv")
-    val folder = ConfigUtil.get[String]("folder", ".//data//")
-    val numPartitions = 6
-    val distance = ConfigUtil.get[Int]("distance", 3)
-    val batch = ConfigUtil.get[Int]("batch", 1000)
-    val itteration = distance - 1
-    var line = ""
-    var output = new StringBuilder
-    var node1 = 0L
-    var node2 = 0L
-    var time = 0L
-    var isFirst = true
-    var inputVertexArray: Array[(Long, NodeExact)] = null
-    var inputEdgeArray: Array[Edge[Long]] = null
-    var users: RDD[(VertexId, NodeExact)] = null
-    var relationships: RDD[Edge[Long]] = null
-    var graph: Graph[NodeExact, Long] = null
-    var total = 0
-    var count = 0
-    var edges = collection.mutable.Map[(Long, Long), Long]()
-    var nodes = collection.mutable.Set[Long]()
-    var msgs: Array[(Long, Long, Long)] = null
-    val startime = new Date().getTime
-    for (line <- Source.fromFile(folder + inputfile).getLines()) {
-      val tmp = line.split(",")
-      total = total + 1
-      count = count + 1
-      edges.put((tmp(0).toLong, tmp(1).toLong), tmp(2).toLong)
-      nodes.add(tmp(0).toLong)
-      nodes.add(tmp(1).toLong)
-      if (count == batch) {
-        count = 0
 
-        //creating vertext RDD from input 
-        for (node1 <- nodes.iterator) {
-          if (inputVertexArray == null) {
-            inputVertexArray = Array((node1, new NodeExact(node1, new Array[Long2LongArrayMap](3))))
-          } else {
-            inputVertexArray = inputVertexArray ++ Array((node1, new NodeExact(node1, new Array[Long2LongArrayMap](3))))
+      val sc = new SparkContext(conf)
+
+      val inputfile = prop.getProperty("inputfile", "facebook_reduced.csv")
+      val outputFile = prop.getProperty("outputFile", "facebook_reduced_estimate.csv")
+      val folder = prop.getProperty("folder", "./data/")
+      val tmpfolder = prop.getProperty("tmpfolder", "./data/")
+      val timeFile = prop.getProperty("timefile", "time.csv")
+      val distance = Integer.parseInt(prop.getProperty("distance", "3"))
+      val batch = Integer.parseInt(prop.getProperty("batch", "1000"))
+      sc.setCheckpointDir(tmpfolder)
+      val numPartitions = Integer.parseInt(prop.getProperty("partition", "6"))
+      val writeResult = Boolean.parseBoolean((prop.getProperty("writeResult", "false")))
+
+      val ftime = new File(folder + timeFile)
+      val bwtime = new BufferedWriter(new FileWriter(ftime))
+      try {
+        val itteration = distance - 1
+        var line = ""
+        var output = new StringBuilder
+        var node1 = 0L
+        var node2 = 0L
+        var time = 0L
+        var isFirst = true
+        var inputVertexArray: Array[(Long, NodeExact)] = null
+        var inputEdgeArray: Array[Edge[Long]] = null
+        var users: RDD[(VertexId, NodeExact)] = null
+        var relationships: RDD[Edge[Long]] = null
+        var graph: Graph[NodeExact, Long] = null
+        var total = 0
+        var count = 0
+        var edges = collection.mutable.Map[(Long, Long), Long]()
+        var nodes = collection.mutable.Set[Long]()
+        var msgs: Array[(Long, Long, Long)] = null
+        var startime = new Date().getTime
+        for (line <- Source.fromFile(folder + inputfile).getLines()) {
+          val tmp = line.split(",")
+          total = total + 1
+          count = count + 1
+          edges.put((tmp(0).toLong, tmp(1).toLong), tmp(2).toLong)
+          nodes.add(tmp(0).toLong)
+          nodes.add(tmp(1).toLong)
+          if (count == batch) {
+            count = 0
+
+            //creating vertext RDD from input 
+            for (node1 <- nodes.iterator) {
+              if (inputVertexArray == null) {
+                inputVertexArray = Array((node1, new NodeExact(node1, new Array[Long2LongArrayMap](distance))))
+              } else {
+                inputVertexArray = inputVertexArray ++ Array((node1, new NodeExact(node1, new Array[Long2LongArrayMap](distance))))
+              }
+
+            }
+            //creating Edge RDD from input
+            for (((node1, node2), time) <- edges.seq.iterator) {
+              if (inputEdgeArray == null) {
+                inputEdgeArray = Array(Edge(node1, node2, time), Edge(node2, node1, time))
+                //            inputEdgeArray = Array(Edge(node1, node2, time))
+              } else
+                //            inputEdgeArray = inputEdgeArray ++ Array(Edge(node1, node2, time))
+                inputEdgeArray = inputEdgeArray ++ Array(Edge(node1, node2, time), Edge(node2, node1, time))
+              if (msgs == null)
+                msgs = Array((node1, node2, time), (node2, node1, time))
+              else
+                msgs = msgs ++ Array((node1, node2, time), (node2, node1, time))
+            }
+            if (isFirst) {
+
+              //println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
+              //          println("initialvertex : " + inputEdgeArray.length)
+              users = sc.parallelize(inputVertexArray, numPartitions)
+              relationships = sc.parallelize(inputEdgeArray, numPartitions)
+              users.cache()
+              relationships.cache()
+              graph = Graph(users, relationships)
+              graph.cache()
+              graph.vertices.count()
+              users.unpersist(false)
+              relationships.unpersist(false)
+              isFirst = false
+
+            } else {
+
+              var newusers: RDD[(VertexId, NodeExact)] = sc.parallelize(inputVertexArray, numPartitions)
+              val oldusers = graph.vertices
+              //creating new user rdd by removing existing users in graph from the list of new users
+              newusers = newusers.leftOuterJoin(oldusers).filter(x => {
+                if (x._2._2 == None)
+                  true
+                else
+                  false
+
+              }).map(x => (x._1, new NodeExact(x._1, x._2._1.summary)))
+              users = oldusers.union(newusers).coalesce(numPartitions, false)
+
+              //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
+              val newrelationships: RDD[Edge[Long]] = sc.parallelize(inputEdgeArray, numPartitions)
+
+              relationships = graph.edges.union(newrelationships).coalesce(numPartitions, false)
+              relationships.cache()
+              users.cache()
+              graph = Graph(users, relationships)
+              graph.cache()
+              users.unpersist(false)
+              relationships.unpersist(false)
+
+            } //end of else
+            val newgraph = graph
+            graph = Pregel(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+            graph.cache()
+            newgraph.unpersist(false)
+            //                graph = PregelCorrected(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+            //             graph.pickRandomVertex();
+            //        graph.inDegrees.count();
+            nodes = nodes.empty
+            edges = edges.empty
+            inputEdgeArray = null
+            inputVertexArray = null
+            println("Done: " + total + " at : " + new Date())
+            bwtime.write(total + "," + (new Date().getTime - startime) + "\n")
+            bwtime.flush()
+            startime = new Date().getTime
+          } //end of if
+
+        } // end of for loop
+        if (count != 0) {
+
+          count = 0
+          //creating vertext RDD from input 
+          for (node1 <- nodes.iterator) {
+            if (inputVertexArray == null) {
+              inputVertexArray = Array((node1, new NodeExact(node1, new Array[Long2LongArrayMap](distance))))
+            } else {
+              inputVertexArray = inputVertexArray ++ Array((node1, new NodeExact(node1, new Array[Long2LongArrayMap](distance))))
+            }
+
           }
-
-        }
-        //creating Edge RDD from input
-        for (((node1, node2), time) <- edges.seq.iterator) {
-          if (inputEdgeArray == null) {
-            inputEdgeArray = Array(Edge(node1, node2, time), Edge(node2, node1, time))
-            //            inputEdgeArray = Array(Edge(node1, node2, time))
-          } else
-            //            inputEdgeArray = inputEdgeArray ++ Array(Edge(node1, node2, time))
-            inputEdgeArray = inputEdgeArray ++ Array(Edge(node1, node2, time), Edge(node2, node1, time))
-          if (msgs == null)
-            msgs = Array((node1, node2, time), (node2, node1, time))
-          else
-            msgs = msgs ++ Array((node1, node2, time), (node2, node1, time))
-        }
-        if (isFirst) {
-
-          //println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
-          //          println("initialvertex : " + inputEdgeArray.length)
-          users = sc.parallelize(inputVertexArray, numPartitions)
-          relationships = sc.parallelize(inputEdgeArray, numPartitions)
-          graph = Graph(users, relationships).groupEdges((attr1, attr2) => Math.max(attr1, attr2))
-          graph.cache()
-          isFirst = false
-
-        } else {
-
-          var newusers: RDD[(VertexId, NodeExact)] = sc.parallelize(inputVertexArray, 6)
-          val oldusers = graph.vertices
-          //creating new user rdd by removing existing users in graph from the list of new users
-          newusers = newusers.leftOuterJoin(oldusers).filter(x => {
-            if (x._2._2 == None)
-              true
+          //creating vertex RDD from input
+          for (((node1, node2), time) <- edges.seq.iterator) {
+            if (inputEdgeArray == null) {
+              inputEdgeArray = Array(Edge(node1, node2, time), Edge(node2, node1, time))
+            } else
+              inputEdgeArray = inputEdgeArray ++ Array(Edge(node1, node2, time), Edge(node2, node1, time))
+            if (msgs == null)
+              msgs = Array((node1, node2, time), (node2, node1, time))
             else
-              false
+              msgs = msgs ++ Array((node1, node2, time), (node2, node1, time))
+          }
+          if (isFirst) {
 
-          }).map(x => (x._1, new NodeExact(x._1, x._2._1.summary)))
-          users = oldusers.union(newusers).coalesce(numPartitions, false)
+            //        println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
+            //        println("initialedge: " + inputEdgeArray.length)
+            users = sc.parallelize(inputVertexArray, numPartitions)
+            relationships = sc.parallelize(inputEdgeArray, numPartitions)
+            users.cache()
+            relationships.cache()
+            graph.cache()
+            graph.vertices.count()
+            isFirst = false
+            users.unpersist(false)
+            relationships.unpersist(false)
+          } else {
 
-          //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
-          val newrelationships: RDD[Edge[Long]] = sc.parallelize(inputEdgeArray)
+            var newusers: RDD[(VertexId, NodeExact)] = sc.parallelize(inputVertexArray, numPartitions)
+            val oldusers = graph.vertices
+            //creating new user rdd by removing existing users in graph from the list of new users
+            newusers = newusers.leftOuterJoin(oldusers).filter(x => {
+              if (x._2._2 == None)
+                true
+              else
+                false
 
-          relationships = graph.edges.union(newrelationships).coalesce(numPartitions, false)
-          graph = Graph(users, relationships).groupEdges((attr1, attr2) => Math.max(attr1, attr2))
+            }).map(x => (x._1, new NodeExact(x._1, x._2._1.summary)))
+            users = oldusers.union(newusers).coalesce(numPartitions, false)
+
+            //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
+            val newrelationships: RDD[Edge[Long]] = sc.parallelize(inputEdgeArray, numPartitions)
+
+            relationships = graph.edges.union(newrelationships).coalesce(numPartitions, false)
+            graph = Graph(users, relationships, null, StorageLevel.MEMORY_AND_DISK_SER, StorageLevel.MEMORY_AND_DISK_SER)
+            users.cache()
+            relationships.cache()
+            graph.cache()
+            graph.vertices.count()
+            users.unpersist(false)
+            relationships.unpersist(false)
+          } //end of else
+
+          val newgraph = graph
+          graph = PregelCorrected(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
           graph.cache()
+          nodes = nodes.empty
+          edges = edges.empty
+          inputEdgeArray = null
+          inputVertexArray = null
 
-        } //end of else
-        //        graph = Pregel(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
-                graph = PregelCorrected(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
-        //             graph.pickRandomVertex();
-//        graph.inDegrees.count();
-        nodes = nodes.empty
-        edges = edges.empty
-        inputEdgeArray = null
-        inputVertexArray = null
-        println("Done: " + total + " at : " + new Date())
-      } //end of if
+          users.unpersist(blocking = false)
+          relationships.unpersist(blocking = false)
+          println("Done: " + total + " at : " + new Date())
+          bwtime.write(total + "," + (new Date().getTime - startime) + "\n")
+          bwtime.flush()
 
-    } // end of for loop
-    if (count != 0) {
-
-      count = 0
-      //creating vertext RDD from input 
-      for (node1 <- nodes.iterator) {
-        if (inputVertexArray == null) {
-          inputVertexArray = Array((node1, new NodeExact(node1, new Array[Long2LongArrayMap](3))))
-        } else {
-          inputVertexArray = inputVertexArray ++ Array((node1, new NodeExact(node1, new Array[Long2LongArrayMap](3))))
         }
-
-      }
-      //creating vertex RDD from input
-      for (((node1, node2), time) <- edges.seq.iterator) {
-        if (inputEdgeArray == null) {
-          inputEdgeArray = Array(Edge(node1, node2, time), Edge(node2, node1, time))
-        } else
-          inputEdgeArray = inputEdgeArray ++ Array(Edge(node1, node2, time), Edge(node2, node1, time))
-        if (msgs == null)
-          msgs = Array((node1, node2, time), (node2, node1, time))
-        else
-          msgs = msgs ++ Array((node1, node2, time), (node2, node1, time))
-      }
-      if (isFirst) {
-
-        //        println("initialvertex : " + inputVertexArray.length + " : " + nodes.size)
-        //        println("initialedge: " + inputEdgeArray.length)
-        users = sc.parallelize(inputVertexArray, numPartitions)
-        relationships = sc.parallelize(inputEdgeArray, numPartitions)
-        graph = Graph(users, relationships).groupEdges((attr1, attr2) => Math.max(attr1, attr2))
-        isFirst = false
-
-      } else {
-
-        var newusers: RDD[(VertexId, NodeExact)] = sc.parallelize(inputVertexArray, 6)
-        val oldusers = graph.vertices
-        //creating new user rdd by removing existing users in graph from the list of new users
-        newusers = newusers.leftOuterJoin(oldusers).filter(x => {
-          if (x._2._2 == None)
-            true
-          else
-            false
-
-        }).map(x => (x._1, new NodeExact(x._1, x._2._1.summary)))
-        users = oldusers.union(newusers).coalesce(numPartitions, false)
-
-        //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
-        val newrelationships: RDD[Edge[Long]] = sc.parallelize(inputEdgeArray, 6)
-
-        relationships = graph.edges.union(newrelationships).coalesce(numPartitions, false)
-        graph = Graph(users, relationships).groupEdges((attr1, attr2) => Math.max(attr1, attr2))
-        graph.cache()
-
-      } //end of else
-
-      //      graph = Pregel(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
-            graph = PregelCorrected(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
-      //      graph.pickRandomVertex();
-//      graph.inDegrees.count();
-      nodes = nodes.empty
-      edges = edges.empty
-      inputEdgeArray = null
-      inputVertexArray = null
-
-      users.unpersist(blocking = false)
-      relationships.unpersist(blocking = false)
-      println("Done: " + total + " at : " + new Date())
-
-    }
-    println("Time : " + (new Date().getTime - startime))
-    /*
+        println("Time : " + (new Date().getTime - startime))
+        /*
      * Print the output
      * 
      */
-    while(true){
-      
-    }
-    graph.vertices.collect.foreach {
-      case (vertexId, node) => {
-        //        println("node summary for " + value + " : " + original_value.getNodeSummary.estimate())
+        if (writeResult) {
+          graph.vertices.collect.foreach {
+            case (vertexId, node) => {
+              //        println("node summary for " + value + " : " + original_value.getNodeSummary.estimate())
 
-        output.append(node.node + "," + node.getsummary(0L) + "\n")
+              output.append(node.node + "," + node.getsummary(0L) + "\n")
+            }
+          }
+          val f = new File(folder + outputFile)
+          val bw = new BufferedWriter(new FileWriter(f))
+          bw.write(output.toString())
+          bw.close()
+        }
+      } finally {
+        bwtime.flush()
+        bwtime.close()
       }
+    } catch {
+      case e: Exception =>
+        logger.error(e)
     }
-    val f = new File(folder + outputFile)
-    val bw = new BufferedWriter(new FileWriter(f))
-    bw.write(output.toString())
-    bw.close()
-
   }
 
   def vertexProgram(id: VertexId, value: NodeExact, msgSum: (Int, Array[(Long, Long, Long)])): NodeExact = {
@@ -252,6 +285,7 @@ object TestGraphExact {
       msgSum._2.foreach({
         x =>
           if (x._1 == value.node) {
+
             if (value.summary(msgSum._1) != null) {
               if (value.summary(msgSum._1).containsKey(x._2)) {
                 if (value.summary(msgSum._1).get(x._2) < x._3) {
