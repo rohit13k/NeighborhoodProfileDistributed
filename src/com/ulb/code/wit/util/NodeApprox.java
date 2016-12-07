@@ -23,6 +23,7 @@ public class NodeApprox implements Serializable {
 	private int currentSuperStep = 0;
 	private int numberOfBucket = 256;
 	private boolean ischanged = false;
+	private int updatecount = 0;
 
 	public NodeApprox(int distance, int numberOfBucket) {
 
@@ -85,6 +86,15 @@ public class NodeApprox implements Serializable {
 
 	public void setIschanged(boolean ischanged) {
 		this.ischanged = ischanged;
+	}
+
+	public int getUpdatecount() {
+		return updatecount;
+	}
+
+	public void incrementUpdatecount() {
+
+		this.updatecount = this.updatecount + 1;
 	}
 
 }

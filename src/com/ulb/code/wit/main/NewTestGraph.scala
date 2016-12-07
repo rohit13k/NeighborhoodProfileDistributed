@@ -21,7 +21,11 @@ import java.io.FileInputStream
 import java.lang.Boolean
 import org.apache.spark.storage.StorageLevel
 import scala.collection.mutable.ArrayBuilder
-
+import org.json4s._
+import org.json4s.jackson.JsonMethods.parse
+import scala.io.Source.fromURL
+import com.ulb.code.wit.util.SparkAppStats.SparkStage
+import scala.collection.mutable.HashSet
 object NewTestGraph {
   // println(getClass().getName())
   //  val logger = Logger.getLogger(getClass().getName());
@@ -38,9 +42,9 @@ object NewTestGraph {
 
       val mode = prop.getProperty("mode", "cluster")
       val conf = new SparkConf().setAppName("NeighbourHoodProfileApprox")
-      conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      conf.registerKryoClasses(Array(classOf[NodeApprox], classOf[SlidingHLL], classOf[Element], classOf[PropogationObjectApprox], classOf[BucketAndHash]))
-      conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
+      //      conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+      //      conf.registerKryoClasses(Array(classOf[NodeApprox], classOf[SlidingHLL], classOf[Element], classOf[PropogationObjectApprox], classOf[BucketAndHash]))
+      //      conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
 
       if (mode.equals("local")) {
         conf.setMaster("local[*]")
@@ -57,14 +61,15 @@ object NewTestGraph {
       val distance = Integer.parseInt(prop.getProperty("distance", "3"))
       val storage = Boolean.parseBoolean((prop.getProperty("storage", "false")))
       val batch = Integer.parseInt(prop.getProperty("batch", "1000"))
-      val writeResult = Boolean.parseBoolean((prop.getProperty("writeResult", "false")))
+      val writeResult = Boolean.parseBoolean((prop.getProperty("writeResult", "true")))
+      val getReplicationFactor = Boolean.parseBoolean((prop.getProperty("getReplicationFactor", "false")))
       val partionStrategy = prop.getProperty("partionStrategy", "")
-      val hdrfLambda = Integer.parseInt(prop.getProperty("hdrfLambda", "1"))
+      val hdrfLambda = (prop.getProperty("hdrfLambda", "1")).toDouble
       val ftime = new File(folder + timeFile)
       val bwtime = new BufferedWriter(new FileWriter(ftime))
       var mypartitioner = new MyPartitionStrategy()
       val globalstats = new GlobalStats(numPartitions, hdrfLambda)
-
+      var bwshuffle: BufferedWriter = null
       if (!tmpfolder.equals(""))
         sc.setCheckpointDir(tmpfolder)
       try {
@@ -82,6 +87,7 @@ object NewTestGraph {
         var graph: Graph[(Long, NodeApprox), Long] = null
         var total = 0
         var count = 0
+        var writecount = 0
         var edges = collection.mutable.Map[(Long, Long), Long]()
         var nodes = collection.mutable.Set[Long]()
         val nodeneighbours = collection.mutable.Map[Long, collection.mutable.Set[Long]]()
@@ -91,29 +97,56 @@ object NewTestGraph {
         var startime = new Date().getTime
         var startimeTotal = new Date().getTime
         var partitionlookup = sc.broadcast(globalstats.edgepartitionsummary)
+        val appid = sc.applicationId
+        var monitorShuffleData = false
+        var masterURL = "localhost"
+        val replication = sc.longAccumulator("MyreplicationFactor")
+
+        if (args.length > 1) {
+          monitorShuffleData = true
+          masterURL = args(1)
+
+          val fshuffle = new File(folder + "Memory_" + partionStrategy + "_" + numPartitions + "_" + outputFile)
+          bwshuffle = new BufferedWriter(new FileWriter(fshuffle))
+        }
+        val url = s"""http://$masterURL:4040/api/v1/applications/$appid/stages"""
+        println(url)
+        implicit val formats = DefaultFormats
+
         //   var degree = sc.broadcast(allnodes)
         for (line <- Source.fromFile(folder + inputfile).getLines()) {
           val tmp = line.split(",")
 
           count = count + 1
           total = total + 1
+          writecount = writecount + 1
           edges.put((tmp(0).toLong, tmp(1).toLong), tmp(2).toLong)
           nodes.add(tmp(0).toLong)
           nodes.add(tmp(1).toLong)
           nodeactivity.put(tmp(0).toLong, nodeactivity.getOrElse(tmp(0).toLong, 0) + 1)
+          nodeactivity.put(tmp(1).toLong, nodeactivity.getOrElse(tmp(1).toLong, 0) + 1)
 
           if (count == batch) {
+            //            println("distinct edges: " + edges.size)
+            //            println("total edges: " + count)
             process
+            count = 0
           } //end of if
+          if (writecount == 900000) {
+            writecount = 0
+            if (writeResult) {
+              writedata(total)
+            }
+          }
 
         } // end of for loop
         if (count != 0) {
-
+          //          println("distinct edges: " + edges.size)
+          //          println("total edges: " + count)
           process
         }
         def process {
 
-          count = 0
           //creating vertext RDD from input 
           for (node1 <- nodes.iterator) {
             inputVertexArray.+=((node1, (node1, new NodeApprox(distance, num_buckets))))
@@ -168,12 +201,12 @@ object NewTestGraph {
 
             relationships = newgraph.edges.union(newrelationships).coalesce(numPartitions, false).cache().setName("updated edge RDD")
             //      graph.unpersist(false)
-
             if (storage) {
               graph = Graph(users, relationships, (-1l, new NodeApprox(distance, num_buckets)), StorageLevel.MEMORY_ONLY_SER, StorageLevel.MEMORY_ONLY_SER)
             } else {
               graph = Graph(users, relationships, (-1l, new NodeApprox(distance, num_buckets)))
             }
+
             graph.vertices.setName("gu vertex")
             graph.edges.setName("gu edges")
 
@@ -183,31 +216,26 @@ object NewTestGraph {
             newgraph.unpersist(false)
           } //end of else
 
-          //        graph = graph.pregel((0, msgs), distance, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
-          // graph = PregelCorrected(graph, (0, msgs), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
           val newgraph = graph
-          graph.pageRank(100, .01).vertices.take(10)
+          //          graph.pageRank(100, .01).vertices.take(10)
           //updating degree for all nodes based on the edge batch
-          edges.foreach { x =>
-            {
-              var temp = nodeneighbours.getOrElse(x._1._1, collection.mutable.Set[Long]())
-              temp.add(x._1._2)
-              nodeneighbours.put(x._1._1, temp)
-              //              temp = nodeneighbours.getOrElse(x._1._2, collection.mutable.Set[Long]())
-              //              temp.add(x._1._1)
-              //              nodeneighbours.put(x._1._2, temp)
-              if (partionStrategy.equals("HDRF")) {
-                globalstats.nodedegree.put(x._1._1, nodeneighbours.getOrElse(x._1._1, collection.mutable.Set[Long]()).size)
-                globalstats.updatePartition(x._1._1, x._1._2, numPartitions)
+          edges.foreach {
+            case ((src, dst), t) =>
+              {
+                var temp = nodeneighbours.getOrElse(src, collection.mutable.Set[Long]())
+                temp.add(dst)
+                nodeneighbours.put(src, temp)
+                temp = nodeneighbours.getOrElse(dst, collection.mutable.Set[Long]())
+                temp.add(src)
+                nodeneighbours.put(dst, temp)
+                if (partionStrategy.equals("HDRF")) {
+                  globalstats.nodedegree.put(src, nodeneighbours.getOrElse(src, collection.mutable.Set[Long]()).size)
+                  globalstats.nodedegree.put(dst, nodeneighbours.getOrElse(dst, collection.mutable.Set[Long]()).size)
+                  globalstats.updatePartitionHDRF(src, dst, numPartitions)
+                }
               }
-            }
           }
 
-          val neighbourhoodProfile = graph.vertices.map(x => {
-            (x._2._1, x._2._2.getNodeSummary.estimate())
-          }).collect().map(f => {
-            f._1 -> f._2
-          }).toMap
           if (partionStrategy.equals("HDRF")) {
             partitionlookup = sc.broadcast(globalstats.edgepartitionsummary)
             mypartitioner = new MyPartitionStrategy(partitionlookup.value, nodeneighbours.map(f => (f._1, f._2.size)))
@@ -218,14 +246,44 @@ object NewTestGraph {
           } else if (partionStrategy.equals("ABH")) {
             val activity = sc.broadcast(nodeactivity)
             mypartitioner = new MyPartitionStrategy(activity.value)
+          } else if (partionStrategy.equals("ReverseABH")) {
+            val activity = sc.broadcast(nodeactivity)
+            mypartitioner = new MyPartitionStrategy(activity.value)
           } else if (partionStrategy.equals("NPH")) {
+            val neighbourhoodProfile = graph.vertices.map(x => {
+              (x._2._1, x._2._2.getNodeSummary.estimate())
+            }).collect().map(f => {
+              f._1 -> f._2
+            }).toMap
             val neighbourhoodsize = sc.broadcast(neighbourhoodProfile)
-            mypartitioner = new MyPartitionStrategy(null, null, neighbourhoodsize.value)
+            mypartitioner = new MyPartitionStrategy(null,null,neighbourhoodsize.value,null)
+          } else if (partionStrategy.equals("UBH")) {
+            val nodeupdatecount = graph.vertices.map(x => {
+              (x._2._1, x._2._2.getUpdatecount)
+            }).collect().map(f => {
+              f._1 -> f._2
+            }).toMap
+            val nodeupdatecountbc = sc.broadcast(nodeupdatecount)
+            mypartitioner = new MyPartitionStrategy(null,null,null,nodeupdatecountbc.value)
           }
 
-          if (!partionStrategy.equals(""))
-            graph = graph.partitionBy(mypartitioner.fromString(partionStrategy), numPartitions)
-          graph.cache()
+          if (!partionStrategy.equals("")) {
+            graph = graph.partitionBy(mypartitioner.fromString(partionStrategy), numPartitions).groupEdges((attr1, attr2) => Math.max(attr1, attr2)).cache()
+
+          }
+
+          if (getReplicationFactor) {
+
+            graph.edges.foreachPartition(x => {
+              val nodes: HashSet[Long] = HashSet.empty
+              for (edge <- x) {
+
+                nodes.add(edge.dstId)
+                nodes.add(edge.srcId)
+              }
+              replication.add(nodes.size)
+            })
+          }
 
           if (!tmpfolder.equals("")) {
             if (!graph.isCheckpointed)
@@ -233,7 +291,8 @@ object NewTestGraph {
           }
           graph.vertices.cache()
           graph.edges.cache()
-          graph = PregelCorrected(graph, (0, msgs.result()), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+          // graph = Pregel(graph, (0, msgs.result()), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+          graph = NewPregel(graph, (0, msgs.result()), itteration, EdgeDirection.Either)(vertexProgram, sendMessage, messageCombiner)
 
           //          graph.edges.count()
           //          newgraph.unpersist(false)
@@ -243,14 +302,24 @@ object NewTestGraph {
           inputEdgeArray.clear()
           msgs.clear()
           inputVertexArray.clear()
+
           users.unpersist(blocking = false)
           relationships.unpersist(blocking = false)
           //            logger.info("Done: " + total + " at : " + new Date())
-          println("Done: " + total + " at : " + new Date())
-          bwtime.write(total + "," + (new Date().getTime - startime) + "\n")
+          val rf: Double = BigDecimal(replication.value.toDouble / nodeactivity.size).setScale(2, BigDecimal.RoundingMode.HALF_UP).toDouble
+          println("Done: " + total + " at : " + new Date() + " RF: " + rf + " total sum: " + replication.sum / nodeactivity.size)
+          bwtime.write(total + "," + (new Date().getTime - startime) + "," + rf + "\n")
           bwtime.flush()
+          replication.reset()
+          if (monitorShuffleData) {
+            val json = fromURL(url).mkString
+            val stages: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("mapPartitions at GraphImpl.scala:207") }
+            //            println("stages count: " + stages.size)
+            //             println("stages count: " + stages.map(_.shuffleReadBytes).sum / (1024 * 1024))
+            bwshuffle.write(total + "," + stages.map(_.shuffleWriteBytes).sum / (1024 * 1024) + "," + stages.map(_.shuffleReadBytes).sum / (1024 * 1024) + "\n")
+            bwshuffle.flush()
+          }
           startime = new Date().getTime
-
         }
         //        logger.info("Completed in time : " + (new Date().getTime - startime))
         println("Completed in time : " + (new Date().getTime - startimeTotal))
@@ -260,20 +329,35 @@ object NewTestGraph {
      * 
      */
         if (writeResult) {
+          println("started result writing")
+
+          writedata(0)
+          println("finished result writing")
+        }
+        def writedata(count: Int) {
           graph.vertices.collect.foreach {
             case (vertexId, (value, original_value)) => {
               //        println("node summary for " + value + " : " + original_value.getNodeSummary.estimate())
-              output.append(value + "," + original_value.getNodeSummary.estimate() + "\n")
+              output.append(value + "," + original_value.getNodeSummary.estimate() + "," + original_value.getUpdatecount + "," + nodeneighbours.get(vertexId).get.size + "\n")
             }
           }
-          val f = new File(folder + outputFile)
+          var filelocation = folder + outputFile;
+          if (count != 0) {
+            filelocation = filelocation + "_" + count
+          }
+          val f = new File(filelocation)
           val bw = new BufferedWriter(new FileWriter(f))
           bw.write(output.toString())
+          bw.flush()
           bw.close()
         }
       } finally {
         bwtime.flush()
         bwtime.close()
+        if (bwshuffle != null) {
+          bwshuffle.flush()
+          bwshuffle.close()
+        }
       }
     } catch {
       case e: Exception => {
@@ -289,6 +373,7 @@ object NewTestGraph {
     if (value._1 == -1l) {
       println("-1 id found " + id)
     }
+
     //if inital msg
     if (msgSum._1 == 0) {
       //reset the variables to clear last round data 
@@ -334,9 +419,12 @@ object NewTestGraph {
         }
         if (timeschanged > 0) {
           value._2.setIschanged(true)
+
         }
 
       }
+      //    if (value._2.isIschanged())
+      value._2.incrementUpdatecount()
 
       value._2.setCurrentSuperStep(msgSum._1)
 

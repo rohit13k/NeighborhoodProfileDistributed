@@ -8,7 +8,7 @@ class GlobalStats(val partitioncount: Int, val lambda: Double) extends Serializa
   var partitions = collection.mutable.Map[Int, collection.mutable.Set[Long]]()
   var maxload = 0
   var minload = 0
-  val nodesummary = collection.mutable.Map[Long, Int]()
+  val nodeactivity = collection.mutable.Map[Long, Int]()
   val edgepartitionsummary = collection.mutable.Map[(Long, Long), Int]()
   val nodedegree = collection.mutable.Map[Long, Int]()
   for (i <- 0 to partitioncount) {
@@ -35,7 +35,8 @@ class GlobalStats(val partitioncount: Int, val lambda: Double) extends Serializa
     temp.add(edge._2)
     partitions.update(part, temp)
   }
-  def updatePartition(src: Long, dst: Long, numParts: Int) {
+  
+  def updatePartitionHDRF(src: Long, dst: Long, numParts: Int) {
     val srcDegree = nodedegree.getOrElse(src, 0) + 1
     val dstDegree = nodedegree.getOrElse(dst, 0) + 1
     var srcNormalizedDegree: Double = srcDegree / (srcDegree + dstDegree)
@@ -48,14 +49,14 @@ class GlobalStats(val partitioncount: Int, val lambda: Double) extends Serializa
     var costBal = 0
     var candidates = collection.mutable.Set[Int]()
     var MAX_SCORE = 0.0
-    for (i <- 0 to numParts) {
+    for (i <- 0 to numParts-1) {
       var SCORE_p = 0.0
-//      if (partitions.get(i).contains(src)) {
-//        costReplication = 1.0 + (1.0 - srcNormalizedDegree).toDouble
-//      }
-//      if (partitions.get(i).contains(dst)) {
-//        costReplication = 1.0 + (1.0 - dstNormaizedDegree).toDouble
-//      }
+      if (partitions.get(i).contains(src)) {
+        costReplication = 1.0 + (1.0 - srcNormalizedDegree).toDouble
+      }
+      if (partitions.get(i).contains(dst)) {
+        costReplication = 1.0 + (1.0 - dstNormaizedDegree).toDouble
+      }
       val load = partitions.get(i).size;
       findLoad()
       costBal = (maxload - load);
@@ -72,7 +73,7 @@ class GlobalStats(val partitioncount: Int, val lambda: Double) extends Serializa
       }
     }
     if (candidates.size == 0) {
-      println("ERROR: GreedyObjectiveFunction.performStep -> candidates.isEmpty()");
+      println("ERROR: candidates.isEmpty()");
       println("MAX_SCORE: " + MAX_SCORE);
       System.exit(-1);
     }

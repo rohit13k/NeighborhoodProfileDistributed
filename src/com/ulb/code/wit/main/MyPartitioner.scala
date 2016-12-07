@@ -5,20 +5,18 @@ import org.apache.spark.graphx._
 import com.ulb.code.wit.util.NodeApprox
 import java.util.Random
 
-class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Long), Int], val nodedegree: collection.mutable.Map[Long, Int], val nodeProfile: scala.collection.immutable.Map[Long, Long]) extends Serializable {
+class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Long), Int], val nodedegree: collection.mutable.Map[Long, Int], val nodeProfile: scala.collection.immutable.Map[Long, Long], val nodeUpdate: scala.collection.immutable.Map[Long, Int]) extends Serializable {
   def this() {
-    this(null, null, null)
+    this(null, null, null,null)
   }
 
   def this(nodedegree: collection.mutable.Map[Long, Int]) {
-    this(null, nodedegree, null)
+    this(null, nodedegree, null,null)
   }
   def this(partitionlookup: collection.mutable.Map[(Long, Long), Int], nodedegree: collection.mutable.Map[Long, Int]) {
-    this(partitionlookup, nodedegree, null)
+    this(partitionlookup, nodedegree, null,null)
   }
-  def this(nodeProfile: scala.collection.immutable.Map[Long, Long]) {
-    this(null, null, nodeProfile)
-  }
+  
   case object Hashing extends PartitionStrategy {
     override def getPartition(src: VertexId, dst: VertexId, numParts: PartitionID): PartitionID = {
       (math.abs(Math.round(Math.random() * 10000) % numParts)).toInt
@@ -46,6 +44,28 @@ class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Lon
       }
     }
   }
+  case object UBH extends PartitionStrategy {
+    override def getPartition(src: VertexId, dst: VertexId, numParts: PartitionID): PartitionID = {
+      val srcUpdateCount = nodeUpdate.getOrElse(src, 0)
+      val dstUpdateCount = nodeUpdate.getOrElse(dst, 0)
+      if (srcUpdateCount > dstUpdateCount) {
+        math.abs(src.hashCode()) % numParts
+      } else {
+        math.abs(dst.hashCode()) % numParts
+      }
+    }
+  }
+  case object ReverseABH extends PartitionStrategy {
+    override def getPartition(src: VertexId, dst: VertexId, numParts: PartitionID): PartitionID = {
+      val srcDegree = nodedegree.getOrElse(src, 0)
+      val dstDegree = nodedegree.getOrElse(dst, 0)
+      if (srcDegree > dstDegree) {
+        math.abs(src.hashCode()) % numParts
+      } else {
+        math.abs(dst.hashCode()) % numParts
+      }
+    }
+  }
   case object NPH extends PartitionStrategy {
     override def getPartition(src: VertexId, dst: VertexId, numParts: PartitionID): PartitionID = {
       val srcDegree = nodeProfile.getOrElse(src, 0l)
@@ -65,6 +85,14 @@ class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Lon
 
     }
   }
+  case object ONLYONE extends PartitionStrategy {
+
+    override def getPartition(src: VertexId, dst: VertexId, numParts: PartitionID): PartitionID = {
+
+      1
+
+    }
+  }
   def fromString(s: String): PartitionStrategy = s match {
     case "RandomVertexCut"          => PartitionStrategy.RandomVertexCut
     case "EdgePartition1D"          => PartitionStrategy.EdgePartition1D
@@ -74,7 +102,10 @@ class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Lon
     case "HDRF"                     => HDRF
     case "DBH"                      => DBH
     case "ABH"                      => ABH
+    case "ReverseABH"               => ReverseABH
     case "NPH"                      => NPH
+    case "UBH"                      => UBH
+    case "ONLYONE"                  => ONLYONE
     case _                          => throw new IllegalArgumentException("Invalid PartitionStrategy: " + s)
   }
 

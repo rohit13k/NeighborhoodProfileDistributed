@@ -206,7 +206,7 @@ object TestGraph {
               if (partionStrategy.equals("HDRF")) {
                 globalstats.nodedegree.put(x._1._1, nodeneighbours.getOrElse(x._1._1, collection.mutable.Set[Long]()).size)
                 globalstats.nodedegree.put(x._1._2, nodeneighbours.getOrElse(x._1._2, collection.mutable.Set[Long]()).size)
-                globalstats.updatePartition(x._1._1, x._1._2, numPartitions)
+                globalstats.updatePartitionHDRF(x._1._1, x._1._2, numPartitions)
               }
             }
           }

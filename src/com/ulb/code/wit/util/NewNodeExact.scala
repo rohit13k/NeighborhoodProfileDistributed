@@ -2,21 +2,22 @@ package com.ulb.code.wit.util
 
 import it.unimi.dsi.fastutil.objects.ObjectArrays
 import it.unimi.dsi.fastutil.longs.Long2LongArrayMap
-
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet
+import scala.collection.immutable.HashMap
+import scala.collection.immutable.HashSet
 
 /**
  * @author Rohit
  */
-class NodeExact(nodeId: Long, summ: Array[Long2LongArrayMap]) extends Serializable {
-  var node: Long = nodeId
-  var currentsuperstep = 0
-  var updateCount = 0
-  var summary: Array[Long2LongArrayMap] = summ
-  var ischanged = false
+class NewNodeExact(nodeId: Long, summ: Array[HashMap[Long,Long]]) extends Serializable {
+  val node: Long = nodeId
+  val currentsuperstep = 0
+  val updateCount = 0
+  val summary: Array[HashMap[Long,Long]] = summ
+  val ischanged = false
   def getsummary(window: Long): Int = {
 
-    var sum: LongOpenHashSet = new LongOpenHashSet()
+    var sum: HashSet[Long] =new HashSet
     for (i <- 0 until summary.length) {
 
       val x = summary(i)
