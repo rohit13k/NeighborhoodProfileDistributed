@@ -284,7 +284,7 @@ object TestGraphExact {
           graph.vertices.cache()
           graph.edges.cache()
 //                              graph = Pregel(graph, (0, msgs.result()), itteration, EdgeDirection.Either)(vertexProgram, sendMessage, messageCombiner)
-          graph = NewPregel(graph, (0, msgs.result()), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+          graph = Pregel(graph, (0, msgs.result()), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
        
           //          graph.edges.count()
           //          newgraph.unpersist(false)

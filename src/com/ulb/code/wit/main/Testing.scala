@@ -13,8 +13,10 @@ import org.apache.log4j.Level
  */
 object Testing {
   def main(args: Array[String]) {
-
-    testSpark
+    for (i <- 0 to -1) {
+      println(i)
+    }
+    //    testSpark
   }
   def slidingHyperAnf(vertexList: Array[(Long, NodeApprox)], edgeList: Array[(Long, Long, Long)], distance: Int, numberOfBucket: Int): Array[(Long, NodeApprox)] = {
     var i = 0

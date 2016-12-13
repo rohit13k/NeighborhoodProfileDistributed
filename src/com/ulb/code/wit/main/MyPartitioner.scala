@@ -7,16 +7,16 @@ import java.util.Random
 
 class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Long), Int], val nodedegree: collection.mutable.Map[Long, Int], val nodeProfile: scala.collection.immutable.Map[Long, Long], val nodeUpdate: scala.collection.immutable.Map[Long, Int]) extends Serializable {
   def this() {
-    this(null, null, null,null)
+    this(null, null, null, null)
   }
 
   def this(nodedegree: collection.mutable.Map[Long, Int]) {
-    this(null, nodedegree, null,null)
+    this(null, nodedegree, null, null)
   }
   def this(partitionlookup: collection.mutable.Map[(Long, Long), Int], nodedegree: collection.mutable.Map[Long, Int]) {
-    this(partitionlookup, nodedegree, null,null)
+    this(partitionlookup, nodedegree, null, null)
   }
-  
+
   case object Hashing extends PartitionStrategy {
     override def getPartition(src: VertexId, dst: VertexId, numParts: PartitionID): PartitionID = {
       (math.abs(Math.round(Math.random() * 10000) % numParts)).toInt
@@ -50,8 +50,17 @@ class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Lon
       val dstUpdateCount = nodeUpdate.getOrElse(dst, 0)
       if (srcUpdateCount > dstUpdateCount) {
         math.abs(src.hashCode()) % numParts
-      } else {
+      } else if (srcUpdateCount < dstUpdateCount) {
         math.abs(dst.hashCode()) % numParts
+      } else {
+        //if update count is same follow degree based approach
+        val srcDegree = nodedegree.getOrElse(src, 0)
+        val dstDegree = nodedegree.getOrElse(dst, 0)
+        if (srcDegree < dstDegree) {
+          math.abs(src.hashCode()) % numParts
+        } else {
+          math.abs(dst.hashCode()) % numParts
+        }
       }
     }
   }

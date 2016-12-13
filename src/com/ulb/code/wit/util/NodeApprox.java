@@ -2,15 +2,8 @@ package com.ulb.code.wit.util;
 
 import java.io.Serializable;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.concurrent.ConcurrentHashMap;
 
-import com.esotericsoftware.kryo.Kryo;
-import com.esotericsoftware.kryo.Serializer;
-import com.esotericsoftware.kryo.io.Input;
-import com.esotericsoftware.kryo.io.Output;
 import com.ulb.code.wit.main.SlidingHLL;
-import com.ulb.code.wit.util.*;
 
 public class NodeApprox implements Serializable {
 

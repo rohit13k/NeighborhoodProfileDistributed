@@ -66,4 +66,18 @@ object Rank {
 
     bwresult.close()
   }
+//  def vertexProgram(id: VertexId, attr: (Double, Double), msgSum: Double): (Double, Double) = {
+//      val (oldPR, lastDelta) = attr
+//      val newPR = oldPR + (1.0 - resetProb) * msgSum
+//      (newPR, newPR - oldPR)
+//    }
+//  def sendMessage(edge: EdgeTriplet[(Double, Double), Double]) = {
+//      if (edge.srcAttr._2 > tol) {
+//        Iterator((edge.dstId, edge.srcAttr._2 * edge.attr))
+//      } else {
+//        Iterator.empty
+//      }
+//    }
+//
+//    def messageCombiner(a: Double, b: Double): Double = a + b
 }
