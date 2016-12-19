@@ -48,7 +48,7 @@ object NewTestGraphExact {
       val conf = new SparkConf().setAppName("NeighbourHoodProfileExact")
       conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       conf.registerKryoClasses(Array(classOf[NewNodeExact]))
-      //      conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
+      conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
 
       if (mode.equals("local")) {
         conf.setMaster("local[*]")
@@ -68,7 +68,7 @@ object NewTestGraphExact {
       val getReplicationFactor = Boolean.parseBoolean((prop.getProperty("getReplicationFactor", "false")))
       val partionStrategy = prop.getProperty("partionStrategy", "")
       val hdrfLambda = (prop.getProperty("hdrfLambda", "1")).toDouble
-      val ftime = new File(folder + "Time_" + inputfile.replace(".csv","") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
+      val ftime = new File(folder + "Time_" + inputfile.replace(".csv", "") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
       val bwtime = new BufferedWriter(new FileWriter(ftime))
       var mypartitioner = new MyPartitionStrategy()
       val globalstats = new GlobalStats(numPartitions, hdrfLambda)
@@ -95,7 +95,7 @@ object NewTestGraphExact {
         var oldnodesAttribute: Map[VertexId, NewNodeExact] = Map[Long, NewNodeExact]()
         val nodeneighbours = collection.mutable.Map[Long, collection.mutable.Set[Long]]()
         //  var allnodes = collection.mutable.Map[Long, Int]()
-        var nodeactivity = collection.mutable.Map[Long, Int]()
+        var nodeReplicationCnt = collection.mutable.Map[Long, Int]()
         var msgs: collection.mutable.Set[(Long, Long, Long, Int)] = collection.mutable.Set[(Long, Long, Long, Int)]()
         var startime = new Date().getTime
         var startimeTotal = new Date().getTime
@@ -109,7 +109,7 @@ object NewTestGraphExact {
           monitorShuffleData = true
           masterURL = args(1)
 
-          val fshuffle = new File(folder + "Memory_" + inputfile.replace(".csv","") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
+          val fshuffle = new File(folder + "Memory_" + inputfile.replace(".csv", "") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
           bwshuffle = new BufferedWriter(new FileWriter(fshuffle))
         }
         val url = s"""http://$masterURL:4040/api/v1/applications/$appid/stages"""
@@ -126,24 +126,23 @@ object NewTestGraphExact {
             edges.put((tmp(0).toLong, tmp(1).toLong), tmp(2).toLong)
             nodes.add(tmp(0).toLong)
             nodes.add(tmp(1).toLong)
-            nodeactivity.put(tmp(0).toLong, nodeactivity.getOrElse(tmp(0).toLong, 0) + 1)
-            nodeactivity.put(tmp(1).toLong, nodeactivity.getOrElse(tmp(1).toLong, 0) + 1)
+            //            nodeactivity.put(tmp(0).toLong, nodeactivity.getOrElse(tmp(0).toLong, 0) + 1)
+            //            nodeactivity.put(tmp(1).toLong, nodeactivity.getOrElse(tmp(1).toLong, 0) + 1)
           }
           if (count == batch) {
-            if (edges.size - count != 0) {
-              println("distinct edges: " + edges.size)
-              println("total edges: " + count)
-            }
+            //            if (edges.size - count != 0) {
+            //              println("distinct edges: " + edges.size)
+            //              println("total edges: " + count)
+            //            }
             process
             count = 0
           } //end of if
-
         } // end of for loop
         if (count != 0) {
-          if (edges.size - count != 0) {
-            println("distinct edges: " + edges.size)
-            println("total edges: " + count)
-          }
+          //          if (edges.size - count != 0) {
+          //            println("distinct edges: " + edges.size)
+          //            println("total edges: " + count)
+          //          }
           process
         }
         def generateInitialMsg(src: Long, dst: Long) {
@@ -153,17 +152,21 @@ object NewTestGraphExact {
           if (nodeneighbours.contains(src)) {
             if (oldnodesAttribute.contains(src)) {
               val nodeAttribute = oldnodesAttribute.get(src).get
-              var iterator = nodeAttribute.summary(0).iterator
-              var item: (Long, Long) = null
-              for (i <- 1 to distance - 2) {
-                if (nodeAttribute.summary(i) != null) {
-                  iterator = nodeAttribute.summary(i).iterator
-                  while (iterator.hasNext) {
-                    item = iterator.next()
-                    if (dst != item._1) //to avoid self addition
-                      msgs.+=((dst, item._1, item._2, i + 1))
+              if (nodeAttribute.summary(0) != null) {
+                var iterator = nodeAttribute.summary(0).iterator
+                var item: (Long, Long) = null
+                for (i <- 1 to distance - 2) {
+                  if (nodeAttribute.summary(i) != null) {
+                    iterator = nodeAttribute.summary(i).iterator
+                    while (iterator.hasNext) {
+                      item = iterator.next()
+                      if (dst != item._1) //to avoid self addition
+                        msgs.+=((dst, item._1, item._2, i + 1))
+                    }
                   }
                 }
+              } else {
+                println("Found null at 0 for :" + nodeAttribute.node)
               }
             }
           }
@@ -214,7 +217,7 @@ object NewTestGraphExact {
             isFirst = false
 
           } else {
-
+            //creating new user rdd by removing existing users in graph from the list of new users
             var newusers: RDD[(VertexId, NewNodeExact)] = sc.parallelize(inputVertexArray.result(), numPartitions).filter(x => {
               if (nodeneighbours.contains(x._1))
                 false
@@ -225,11 +228,9 @@ object NewTestGraphExact {
             newusers.count() //materialize the new users
 
             val oldusers = graph.vertices
-            //creating new user rdd by removing existing users in graph from the list of new users
-
+            users = oldusers.union(newusers).coalesce(numPartitions, false).cache().setName("updated Users RDD")
             val newrelationships: RDD[Edge[Long]] = sc.parallelize(inputEdgeArray.result(), numPartitions)
 
-            users = oldusers.union(newusers).coalesce(numPartitions, false).cache().setName("updated Users RDD")
             //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
 
             relationships = graph.edges.union(newrelationships).coalesce(numPartitions, false).cache().setName("updated edge RDD")
@@ -266,6 +267,7 @@ object NewTestGraphExact {
                   globalstats.nodedegree.put(dst, nodeneighbours.getOrElse(dst, collection.mutable.Set[Long]()).size)
                   globalstats.updatePartitionHDRF(src, dst, numPartitions)
                 }
+
               }
           }
 
@@ -276,12 +278,12 @@ object NewTestGraphExact {
 
             val degree = sc.broadcast(nodeneighbours.map(f => (f._1, f._2.size)))
             mypartitioner = new MyPartitionStrategy(degree.value)
-          } else if (partionStrategy.equals("ABH")) {
-            val activity = sc.broadcast(nodeactivity)
-            mypartitioner = new MyPartitionStrategy(activity.value)
-          } else if (partionStrategy.equals("ReverseABH")) {
-            val activity = sc.broadcast(nodeactivity)
-            mypartitioner = new MyPartitionStrategy(activity.value)
+            //          } else if (partionStrategy.equals("ABH")) {
+            //            val activity = sc.broadcast(nodeactivity)
+            //            mypartitioner = new MyPartitionStrategy(activity.value)
+            //          } else if (partionStrategy.equals("ReverseABH")) {
+            //            val activity = sc.broadcast(nodeactivity)
+            //            mypartitioner = new MyPartitionStrategy(activity.value)
           } else if (partionStrategy.equals("NPH")) {
             val neighbourhoodProfile = graph.vertices.map(x => {
               (x._2.node, x._2.getsummary(0L).toLong)
@@ -289,19 +291,35 @@ object NewTestGraphExact {
               f._1 -> f._2
             }).toMap
             val neighbourhoodsize = sc.broadcast(neighbourhoodProfile)
-            mypartitioner = new MyPartitionStrategy(null, null, neighbourhoodsize.value, null)
-          } else if (partionStrategy.equals("UBH")) {
+            mypartitioner = new MyPartitionStrategy(null, null, neighbourhoodsize.value, null, null)
+          } else if (partionStrategy.equals("UBH") || partionStrategy.equals("UBHAdvanced")) {
             val nodeupdatecount = graph.vertices.map(x => {
               (x._1, x._2.updateCount)
             }).collect().map(f => {
               f._1 -> f._2
             }).toMap
             val degree = nodeneighbours.map(f => (f._1, f._2.size))
-            mypartitioner = new MyPartitionStrategy(null, degree, null, nodeupdatecount)
+            if (partionStrategy.equals("UBH")) {
+              mypartitioner = new MyPartitionStrategy(null, degree, null, nodeupdatecount, null)
+            } else {
+              //update replication count of every node
+              var replicatednode = 0l;
+              val noderepold=nodeReplicationCnt.clone()
+              edges.foreach {
+                case ((src, dst), t) =>
+                  {
+                    replicatednode = getUBHPartition(src, dst, numPartitions, degree, nodeupdatecount,noderepold)
+                    nodeReplicationCnt.update(replicatednode, nodeReplicationCnt.getOrElse(replicatednode, 0) + 1)
+                  }
+              }
+              mypartitioner = new MyPartitionStrategy(null, degree, null, nodeupdatecount, nodeReplicationCnt)
+            }
+
           }
 
           if (!partionStrategy.equals(""))
-            graph = graph.partitionBy(mypartitioner.fromString(partionStrategy), numPartitions)
+            graph = graph.partitionBy(mypartitioner.fromString(partionStrategy), numPartitions).groupEdges((a, b) => Math.max(a, b))
+
           graph.cache()
 
           if (getReplicationFactor) {
@@ -339,8 +357,8 @@ object NewTestGraphExact {
           users.unpersist(blocking = false)
           relationships.unpersist(blocking = false)
           //            logger.info("Done: " + total + " at : " + new Date())
-          val rf: Double = BigDecimal(replication.value.toDouble / nodeactivity.size).setScale(2, BigDecimal.RoundingMode.HALF_UP).toDouble
-          println("Done: " + total + " at : " + new Date() + " RF: " + rf + " total sum: " + replication.sum / nodeactivity.size)
+          val rf: Double = BigDecimal(replication.value.toDouble / nodeneighbours.size).setScale(2, BigDecimal.RoundingMode.HALF_UP).toDouble
+          println("Done: " + total + " at : " + new Date() + " RF: " + rf + " total sum: " + replication.sum / nodeneighbours.size)
           bwtime.write(total + "," + (new Date().getTime - startime) + "," + rf + "\n")
           bwtime.flush()
           replication.reset()
@@ -408,10 +426,10 @@ object NewTestGraphExact {
       }
     })
     //    val inspectionset = Set(3460l, 3881l, 3602l, 3761l, 3829l, 3466l, 3915l, 3554l)
-//        val inspectionset = Set(86l)
-//        if (inspectionset.contains(id)) {
-//          println(id + " " + msgSum._1)
-//        }
+    //        val inspectionset = Set(86l)
+    //        if (inspectionset.contains(id)) {
+    //          println(id + " " + msgSum._1)
+    //        }
     //if inital msg
     if (msgSum._1 == 0) {
       val newmsg: scala.collection.mutable.Set[(Int, Long, Long)] = scala.collection.mutable.Set[(Int, Long, Long)]()
@@ -558,6 +576,26 @@ object NewTestGraphExact {
     } else
       Iterator.empty
 
+  }
+  def getUBHPartition(src: Long, dst: Long, numParts: Int, nodedegree: collection.mutable.Map[Long, Int], nodeUpdate: scala.collection.immutable.Map[Long, Int], nodeReplication: scala.collection.mutable.Map[Long, Int]): Long = {
+    val srcUpdateCount = nodeUpdate.getOrElse(src, 0)
+    val dstUpdateCount = nodeUpdate.getOrElse(dst, 0)
+    val srcReplicationCount = nodeReplication.getOrElse(src, 0)
+    val dstReplicationCount = nodeReplication.getOrElse(dst, 0)
+    if ((srcUpdateCount*srcReplicationCount) > (dstUpdateCount*dstReplicationCount)) {
+      dst
+    } else if ((srcUpdateCount*srcReplicationCount) < (dstUpdateCount*dstReplicationCount)) {
+      src
+    } else {
+      //if update count is same follow degree based approach
+      val srcDegree = nodedegree.getOrElse(src, 0)
+      val dstDegree = nodedegree.getOrElse(dst, 0)
+      if (srcDegree < dstDegree) {
+        dst
+      } else {
+        src
+      }
+    }
   }
 
 }

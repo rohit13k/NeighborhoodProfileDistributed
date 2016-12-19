@@ -257,7 +257,7 @@ object TestGraphExact {
               f._1 -> f._2
             }).toMap
             val neighbourhoodsize = sc.broadcast(neighbourhoodProfile)
-            mypartitioner = new MyPartitionStrategy(null, null, neighbourhoodsize.value,null)
+            mypartitioner = new MyPartitionStrategy(null, null, neighbourhoodsize.value,null,null)
           }
 
           if (!partionStrategy.equals(""))

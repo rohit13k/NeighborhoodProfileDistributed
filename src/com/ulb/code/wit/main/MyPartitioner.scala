@@ -5,16 +5,16 @@ import org.apache.spark.graphx._
 import com.ulb.code.wit.util.NodeApprox
 import java.util.Random
 
-class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Long), Int], val nodedegree: collection.mutable.Map[Long, Int], val nodeProfile: scala.collection.immutable.Map[Long, Long], val nodeUpdate: scala.collection.immutable.Map[Long, Int]) extends Serializable {
+class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Long), Int], val nodedegree: collection.mutable.Map[Long, Int], val nodeProfile: scala.collection.immutable.Map[Long, Long], val nodeUpdate: scala.collection.immutable.Map[Long, Int], val nodeReplication: scala.collection.mutable.Map[Long, Int]) extends Serializable {
   def this() {
-    this(null, null, null, null)
+    this(null, null, null, null, null)
   }
 
   def this(nodedegree: collection.mutable.Map[Long, Int]) {
-    this(null, nodedegree, null, null)
+    this(null, nodedegree, null, null, null)
   }
   def this(partitionlookup: collection.mutable.Map[(Long, Long), Int], nodedegree: collection.mutable.Map[Long, Int]) {
-    this(partitionlookup, nodedegree, null, null)
+    this(partitionlookup, nodedegree, null, null, null)
   }
 
   case object Hashing extends PartitionStrategy {
@@ -51,6 +51,28 @@ class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Lon
       if (srcUpdateCount > dstUpdateCount) {
         math.abs(src.hashCode()) % numParts
       } else if (srcUpdateCount < dstUpdateCount) {
+        math.abs(dst.hashCode()) % numParts
+      } else {
+        //if update count is same follow degree based approach
+        val srcDegree = nodedegree.getOrElse(src, 0)
+        val dstDegree = nodedegree.getOrElse(dst, 0)
+        if (srcDegree < dstDegree) {
+          math.abs(src.hashCode()) % numParts
+        } else {
+          math.abs(dst.hashCode()) % numParts
+        }
+      }
+    }
+  }
+  case object UBHAdvanced extends PartitionStrategy {
+    override def getPartition(src: VertexId, dst: VertexId, numParts: PartitionID): PartitionID = {
+      val srcUpdateCount = nodeUpdate.getOrElse(src, 0)
+      val dstUpdateCount = nodeUpdate.getOrElse(dst, 0)
+      val srcReplicationCount=nodeReplication.getOrElse(src, 0)
+      val dstReplicationCount=nodeReplication.getOrElse(dst, 0)
+      if ((srcUpdateCount*srcReplicationCount) > (dstUpdateCount*dstReplicationCount)) {
+        math.abs(src.hashCode()) % numParts
+      } else if (((srcUpdateCount*srcReplicationCount) < (dstUpdateCount*dstReplicationCount))) {
         math.abs(dst.hashCode()) % numParts
       } else {
         //if update count is same follow degree based approach
@@ -114,6 +136,7 @@ class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Lon
     case "ReverseABH"               => ReverseABH
     case "NPH"                      => NPH
     case "UBH"                      => UBH
+    case "UBHAdvanced"              => UBHAdvanced
     case "ONLYONE"                  => ONLYONE
     case _                          => throw new IllegalArgumentException("Invalid PartitionStrategy: " + s)
   }

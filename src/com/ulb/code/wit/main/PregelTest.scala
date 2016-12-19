@@ -5,7 +5,7 @@ import com.alibaba.fastjson.JSONObject
 import org.apache.spark.{ SparkConf, SparkContext }
 import org.apache.log4j.Logger
 import org.apache.log4j.Level
-import scala.collection.mutable.HashMap
+import scala.collection.immutable.HashMap
 
 
 object PregelTest {
@@ -17,10 +17,10 @@ object PregelTest {
       
       if (msg < 0) {
         // init message received 
-        if (v.equals(0.asInstanceOf[VertexId])) updatedAttr = attr.+=("LENGTH" -> 0)
-        else updatedAttr = attr.+=("LENGTH" -> Integer.MAX_VALUE)
+        if (v.equals(0.asInstanceOf[VertexId])) updatedAttr = attr.+("LENGTH" -> 0)
+        else updatedAttr = attr.+("LENGTH" -> Integer.MAX_VALUE)
       } else {
-        updatedAttr = attr.+=("LENGTH" -> (msg + 1))
+        updatedAttr = attr.+("LENGTH" -> (msg + 1))
       }
       updatedAttr
     }

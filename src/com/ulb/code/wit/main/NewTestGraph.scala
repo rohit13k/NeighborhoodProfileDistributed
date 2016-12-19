@@ -256,7 +256,7 @@ object NewTestGraph {
               f._1 -> f._2
             }).toMap
             val neighbourhoodsize = sc.broadcast(neighbourhoodProfile)
-            mypartitioner = new MyPartitionStrategy(null,null,neighbourhoodsize.value,null)
+            mypartitioner = new MyPartitionStrategy(null,null,neighbourhoodsize.value,null,null)
           } else if (partionStrategy.equals("UBH")) {
             val nodeupdatecount = graph.vertices.map(x => {
               (x._2._1, x._2._2.getUpdatecount)
@@ -264,7 +264,7 @@ object NewTestGraph {
               f._1 -> f._2
             }).toMap
             val nodeupdatecountbc = sc.broadcast(nodeupdatecount)
-            mypartitioner = new MyPartitionStrategy(null,null,null,nodeupdatecountbc.value)
+            mypartitioner = new MyPartitionStrategy(null,null,null,nodeupdatecountbc.value,null)
           }
 
           if (!partionStrategy.equals("")) {
