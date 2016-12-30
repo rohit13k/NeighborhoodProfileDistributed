@@ -20,6 +20,8 @@ class PageRank {
 object Rank {
   var minPartitions = 6
   private val logger = LoggerFactory getLogger classOf[PageRank]
+  val tol=0.0001
+  val resetProb: Double = 0.15
   def main(args: Array[String]) {
     var starttime = new Date().getTime
     Logger.getLogger("org").setLevel(Level.OFF)
@@ -48,7 +50,7 @@ object Rank {
     val graph = Graph.fromEdges(input, defaultVertex, StorageLevel.MEMORY_AND_DISK, StorageLevel.MEMORY_AND_DISK);
     graph.cache()
     graph.vertices.count()
-    val node = graph.pageRank(0.0001).vertices
+    val node = graph.pageRank(tol).vertices
     val result = node.distinct().takeOrdered(50)(Ordering[Double].reverse.on(x => x._2))
     // println(result.mkString("\n"))
 
@@ -66,18 +68,18 @@ object Rank {
 
     bwresult.close()
   }
-//  def vertexProgram(id: VertexId, attr: (Double, Double), msgSum: Double): (Double, Double) = {
-//      val (oldPR, lastDelta) = attr
-//      val newPR = oldPR + (1.0 - resetProb) * msgSum
-//      (newPR, newPR - oldPR)
-//    }
-//  def sendMessage(edge: EdgeTriplet[(Double, Double), Double]) = {
-//      if (edge.srcAttr._2 > tol) {
-//        Iterator((edge.dstId, edge.srcAttr._2 * edge.attr))
-//      } else {
-//        Iterator.empty
-//      }
-//    }
-//
-//    def messageCombiner(a: Double, b: Double): Double = a + b
+  def vertexProgram(id: VertexId, attr: (Double, Double), msgSum: Double): (Double, Double) = {
+      val (oldPR, lastDelta) = attr
+      val newPR = oldPR + (1.0 - resetProb) * msgSum
+      (newPR, newPR - oldPR)
+    }
+  def sendMessage(edge: EdgeTriplet[(Double, Double), Double]) = {
+      if (edge.srcAttr._2 > tol) {
+        Iterator((edge.dstId, edge.srcAttr._2 * edge.attr))
+      } else {
+        Iterator.empty
+      }
+    }
+
+    def messageCombiner(a: Double, b: Double): Double = a + b
 }

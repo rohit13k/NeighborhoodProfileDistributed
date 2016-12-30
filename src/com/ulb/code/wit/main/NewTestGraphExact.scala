@@ -8,7 +8,6 @@ import org.apache.spark._
 import org.apache.spark.graphx._
 import org.apache.spark.graphx.lib._
 import org.apache.spark.rdd.RDD
-
 import org.apache.log4j.Logger
 import org.apache.log4j.Level
 import scala.io.Source
@@ -30,6 +29,7 @@ import scala.collection.mutable.HashSet
 import com.ulb.code.wit.util.NewNodeExact
 import scala.io.Source.fromURL
 import com.ulb.code.wit.util.SparkAppStats.SparkStage
+import org.apache.spark.util.CollectionAccumulator
 object NewTestGraphExact {
 
   val logger = Logger.getLogger(getClass().getName());
@@ -90,7 +90,9 @@ object NewTestGraphExact {
         var graph: Graph[NewNodeExact, Long] = null
         var total = 0
         var count = 0
+        var partitionDistribution = collection.mutable.Map[Int,String]()
         var edges = collection.mutable.Map[(Long, Long), Long]()
+//        var distinctedges = collection.mutable.Set[(Long, Long)]()
         var nodes = collection.mutable.Set[Long]()
         var oldnodesAttribute: Map[VertexId, NewNodeExact] = Map[Long, NewNodeExact]()
         val nodeneighbours = collection.mutable.Map[Long, collection.mutable.Set[Long]]()
@@ -104,7 +106,7 @@ object NewTestGraphExact {
         var monitorShuffleData = false
         var masterURL = "localhost"
         val replication = sc.longAccumulator("MyreplicationFactor")
-
+//        val edgecount: CollectionAccumulator[String] = sc.collectionAccumulator("EdgeCount")
         if (args.length > 1) {
           monitorShuffleData = true
           masterURL = args(1)
@@ -123,9 +125,13 @@ object NewTestGraphExact {
           count = count + 1
           total = total + 1
           if (tmp(0).toLong != tmp(1).toLong) { //avoid self loop
-            edges.put((tmp(0).toLong, tmp(1).toLong), tmp(2).toLong)
+            if (tmp(0).toLong > tmp(1).toLong)
+              edges.put((tmp(0).toLong, tmp(1).toLong), tmp(2).toLong)
+            else
+              edges.put((tmp(1).toLong, tmp(0).toLong), tmp(2).toLong)
             nodes.add(tmp(0).toLong)
             nodes.add(tmp(1).toLong)
+           
             //            nodeactivity.put(tmp(0).toLong, nodeactivity.getOrElse(tmp(0).toLong, 0) + 1)
             //            nodeactivity.put(tmp(1).toLong, nodeactivity.getOrElse(tmp(1).toLong, 0) + 1)
           }
@@ -134,6 +140,7 @@ object NewTestGraphExact {
             //              println("distinct edges: " + edges.size)
             //              println("total edges: " + count)
             //            }
+            println("distinct edges: " + edges.size)
             process
             count = 0
           } //end of if
@@ -166,7 +173,7 @@ object NewTestGraphExact {
                   }
                 }
               } else {
-                println("Found null at 0 for :" + nodeAttribute.node)
+                println("Found null at 0 for :" + nodeAttribute.node + " src " + src + " dsd " + dst)
               }
             }
           }
@@ -304,11 +311,11 @@ object NewTestGraphExact {
             } else {
               //update replication count of every node
               var replicatednode = 0l;
-              val noderepold=nodeReplicationCnt.clone()
+              val noderepold = nodeReplicationCnt.clone()
               edges.foreach {
                 case ((src, dst), t) =>
                   {
-                    replicatednode = getUBHPartition(src, dst, numPartitions, degree, nodeupdatecount,noderepold)
+                    replicatednode = getUBHPartition(src, dst, numPartitions, degree, nodeupdatecount, noderepold)
                     nodeReplicationCnt.update(replicatednode, nodeReplicationCnt.getOrElse(replicatednode, 0) + 1)
                   }
               }
@@ -327,12 +334,18 @@ object NewTestGraphExact {
             graph.edges.foreachPartition(x => {
               val nodes: HashSet[Long] = HashSet.empty
               for (edge <- x) {
-
+               
                 nodes.add(edge.dstId)
                 nodes.add(edge.srcId)
               }
               replication.add(nodes.size)
             })
+            
+            val partition=graph.edges.mapPartitionsWithIndex((id,iter) => Array((id,iter.size)).iterator,true).collect()
+            for((id,count)<-partition){
+              partitionDistribution.put(id, partitionDistribution.getOrElse(id,"")+count+",")
+              
+            }
           }
 
           if (!tmpfolder.equals("")) {
@@ -359,9 +372,11 @@ object NewTestGraphExact {
           //            logger.info("Done: " + total + " at : " + new Date())
           val rf: Double = BigDecimal(replication.value.toDouble / nodeneighbours.size).setScale(2, BigDecimal.RoundingMode.HALF_UP).toDouble
           println("Done: " + total + " at : " + new Date() + " RF: " + rf + " total sum: " + replication.sum / nodeneighbours.size)
+       
           bwtime.write(total + "," + (new Date().getTime - startime) + "," + rf + "\n")
           bwtime.flush()
           replication.reset()
+        
           if (monitorShuffleData) {
             val json = fromURL(url).mkString
             val stages: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("mapPartitions at GraphImpl.scala:207") }
@@ -374,6 +389,9 @@ object NewTestGraphExact {
         }
         //        logger.info("Completed in time : " + (new Date().getTime - startime))
         println("Completed in time : " + (new Date().getTime - startimeTotal))
+        for(i<-0 to 7){
+          println(i+","+partitionDistribution.get(i).get+"\n")
+        }
 
         /*
      * Print the output
@@ -551,30 +569,34 @@ object NewTestGraphExact {
     //    }
 
     var msg: collection.mutable.Set[(Long, Long, Long, Int)] = null
-    if (triplet.srcAttr.ischanged) {
-      val sum = triplet.srcAttr.summary(triplet.srcAttr.currentsuperstep)
-      if (sum != null) {
-        val tempItertator = sum.keysIterator
-        while (tempItertator.hasNext) {
-          val value = tempItertator.next()
-          val time = sum.get(value).get
-          if (triplet.dstId != value) {
-            if (msg == null) {
-              msg = collection.mutable.Set((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr.currentsuperstep + 1))
-            } else {
-              msg.add((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr.currentsuperstep + 1))
+    if (triplet.srcAttr != null) {
+      if (triplet.srcAttr.ischanged) {
+        val sum = triplet.srcAttr.summary(triplet.srcAttr.currentsuperstep)
+        if (sum != null) {
+          val tempItertator = sum.keysIterator
+          while (tempItertator.hasNext) {
+            val value = tempItertator.next()
+            val time = sum.get(value).get
+            if (triplet.dstId != value) {
+              if (msg == null) {
+                msg = collection.mutable.Set((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr.currentsuperstep + 1))
+              } else {
+                msg.add((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr.currentsuperstep + 1))
+              }
             }
           }
-        }
 
-        if (msg == null) {
-          Iterator.empty
+          if (msg == null) {
+            Iterator.empty
+          } else
+            Iterator((triplet.dstId, (triplet.srcAttr.currentsuperstep + 1, msg)))
         } else
-          Iterator((triplet.dstId, (triplet.srcAttr.currentsuperstep + 1, msg)))
+          Iterator.empty
       } else
         Iterator.empty
-    } else
+    } else {
       Iterator.empty
+    }
 
   }
   def getUBHPartition(src: Long, dst: Long, numParts: Int, nodedegree: collection.mutable.Map[Long, Int], nodeUpdate: scala.collection.immutable.Map[Long, Int], nodeReplication: scala.collection.mutable.Map[Long, Int]): Long = {
@@ -582,9 +604,9 @@ object NewTestGraphExact {
     val dstUpdateCount = nodeUpdate.getOrElse(dst, 0)
     val srcReplicationCount = nodeReplication.getOrElse(src, 0)
     val dstReplicationCount = nodeReplication.getOrElse(dst, 0)
-    if ((srcUpdateCount*srcReplicationCount) > (dstUpdateCount*dstReplicationCount)) {
+    if ((srcUpdateCount * srcReplicationCount) > (dstUpdateCount * dstReplicationCount)) {
       dst
-    } else if ((srcUpdateCount*srcReplicationCount) < (dstUpdateCount*dstReplicationCount)) {
+    } else if ((srcUpdateCount * srcReplicationCount) < (dstUpdateCount * dstReplicationCount)) {
       src
     } else {
       //if update count is same follow degree based approach
