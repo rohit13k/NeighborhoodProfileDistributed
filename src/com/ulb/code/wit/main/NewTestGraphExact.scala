@@ -49,7 +49,7 @@ object NewTestGraphExact {
       conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       conf.registerKryoClasses(Array(classOf[NewNodeExact]))
       conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
-
+      
       if (mode.equals("local")) {
         conf.setMaster("local[*]")
       }
@@ -83,16 +83,16 @@ object NewTestGraphExact {
         var node2 = 0L
         var time = 0L
         var isFirst = true
-        var inputVertexArray: ArrayBuilder[(Long, NewNodeExact)] = ArrayBuilder.make()
+        var inputVertexArray: ArrayBuilder[(Long, (NewNodeExact, Boolean))] = ArrayBuilder.make()
         var inputEdgeArray: ArrayBuilder[Edge[Long]] = ArrayBuilder.make()
-        var users: RDD[(VertexId, NewNodeExact)] = null
+        var users: RDD[(VertexId, (NewNodeExact, Boolean))] = null
         var relationships: RDD[Edge[Long]] = null
-        var graph: Graph[NewNodeExact, Long] = null
+        var graph: Graph[(NewNodeExact, Boolean), Long] = null
         var total = 0
         var count = 0
-        var partitionDistribution = collection.mutable.Map[Int,String]()
+        var partitionDistribution = collection.mutable.Map[Int, String]()
         var edges = collection.mutable.Map[(Long, Long), Long]()
-//        var distinctedges = collection.mutable.Set[(Long, Long)]()
+        //        var distinctedges = collection.mutable.Set[(Long, Long)]()
         var nodes = collection.mutable.Set[Long]()
         var oldnodesAttribute: Map[VertexId, NewNodeExact] = Map[Long, NewNodeExact]()
         val nodeneighbours = collection.mutable.Map[Long, collection.mutable.Set[Long]]()
@@ -106,7 +106,7 @@ object NewTestGraphExact {
         var monitorShuffleData = false
         var masterURL = "localhost"
         val replication = sc.longAccumulator("MyreplicationFactor")
-//        val edgecount: CollectionAccumulator[String] = sc.collectionAccumulator("EdgeCount")
+        //        val edgecount: CollectionAccumulator[String] = sc.collectionAccumulator("EdgeCount")
         if (args.length > 1) {
           monitorShuffleData = true
           masterURL = args(1)
@@ -131,7 +131,7 @@ object NewTestGraphExact {
               edges.put((tmp(1).toLong, tmp(0).toLong), tmp(2).toLong)
             nodes.add(tmp(0).toLong)
             nodes.add(tmp(1).toLong)
-           
+
             //            nodeactivity.put(tmp(0).toLong, nodeactivity.getOrElse(tmp(0).toLong, 0) + 1)
             //            nodeactivity.put(tmp(1).toLong, nodeactivity.getOrElse(tmp(1).toLong, 0) + 1)
           }
@@ -181,7 +181,7 @@ object NewTestGraphExact {
         def process {
           //creating vertext RDD from input 
           for (node1 <- nodes.iterator) {
-            inputVertexArray.+=((node1, new NewNodeExact(node1, new Array[scala.collection.immutable.HashMap[Long, Long]](distance))))
+            inputVertexArray.+=((node1, (new NewNodeExact(node1, new Array[scala.collection.immutable.HashMap[Long, Long]](distance)), false)))
 
           }
           if (!isFirst) {
@@ -192,7 +192,7 @@ object NewTestGraphExact {
                 false
               }
 
-            }).collect().toMap
+            }).mapValues(x => x._1).collect().toMap
           }
           //creating edge RDD and initial msg from input
           for (((node1, node2), time) <- edges.seq.iterator) {
@@ -205,12 +205,13 @@ object NewTestGraphExact {
             generateInitialMsg(node2, node1)
           }
 
-          val defaultNode = new NewNodeExact(-1, new Array[scala.collection.immutable.HashMap[Long, Long]](distance))
+          val defaultNode = (new NewNodeExact(-1, new Array[scala.collection.immutable.HashMap[Long, Long]](distance)), java.lang.Boolean.FALSE)
           if (isFirst) {
 
-            users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(new HashPartitioner(numPartitions)).setName("User RDD")
+            users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(new HashPartitioner(numPartitions)).setName("User RDD").cache()
 
-            relationships = sc.parallelize(inputEdgeArray.result(), numPartitions).cache().setName("Relationship RDD")
+            relationships = sc.parallelize(inputEdgeArray.result(), numPartitions).cache().setName("Relationship RDD").cache()
+
 
             if (storage) {
 
@@ -225,7 +226,7 @@ object NewTestGraphExact {
 
           } else {
             //creating new user rdd by removing existing users in graph from the list of new users
-            var newusers: RDD[(VertexId, NewNodeExact)] = sc.parallelize(inputVertexArray.result(), numPartitions).filter(x => {
+            var newusers = sc.parallelize(inputVertexArray.result(), numPartitions).filter(x => {
               if (nodeneighbours.contains(x._1))
                 false
               else
@@ -293,7 +294,7 @@ object NewTestGraphExact {
             //            mypartitioner = new MyPartitionStrategy(activity.value)
           } else if (partionStrategy.equals("NPH")) {
             val neighbourhoodProfile = graph.vertices.map(x => {
-              (x._2.node, x._2.getsummary(0L).toLong)
+              (x._2._1.node, x._2._1.getsummary(0L).toLong)
             }).collect().map(f => {
               f._1 -> f._2
             }).toMap
@@ -301,7 +302,7 @@ object NewTestGraphExact {
             mypartitioner = new MyPartitionStrategy(null, null, neighbourhoodsize.value, null, null)
           } else if (partionStrategy.equals("UBH") || partionStrategy.equals("UBHAdvanced")) {
             val nodeupdatecount = graph.vertices.map(x => {
-              (x._1, x._2.updateCount)
+              (x._1, x._2._1.updateCount)
             }).collect().map(f => {
               f._1 -> f._2
             }).toMap
@@ -311,11 +312,11 @@ object NewTestGraphExact {
             } else {
               //update replication count of every node
               var replicatednode = 0l;
-              val noderepold = nodeReplicationCnt.clone()
+              val nodeRepCntOld = nodeReplicationCnt.clone()
               edges.foreach {
                 case ((src, dst), t) =>
                   {
-                    replicatednode = getUBHPartition(src, dst, numPartitions, degree, nodeupdatecount, noderepold)
+                    replicatednode = getUBHPartition(src, dst, numPartitions, degree, nodeupdatecount, nodeRepCntOld)
                     nodeReplicationCnt.update(replicatednode, nodeReplicationCnt.getOrElse(replicatednode, 0) + 1)
                   }
               }
@@ -334,17 +335,17 @@ object NewTestGraphExact {
             graph.edges.foreachPartition(x => {
               val nodes: HashSet[Long] = HashSet.empty
               for (edge <- x) {
-               
+
                 nodes.add(edge.dstId)
                 nodes.add(edge.srcId)
               }
               replication.add(nodes.size)
             })
-            
-            val partition=graph.edges.mapPartitionsWithIndex((id,iter) => Array((id,iter.size)).iterator,true).collect()
-            for((id,count)<-partition){
-              partitionDistribution.put(id, partitionDistribution.getOrElse(id,"")+count+",")
-              
+
+            val partition = graph.edges.mapPartitionsWithIndex((id, iter) => Array((id, iter.size)).iterator, true).collect()
+            for ((id, count) <- partition) {
+              partitionDistribution.put(id, partitionDistribution.getOrElse(id, "") + count + ",")
+
             }
           }
 
@@ -372,11 +373,11 @@ object NewTestGraphExact {
           //            logger.info("Done: " + total + " at : " + new Date())
           val rf: Double = BigDecimal(replication.value.toDouble / nodeneighbours.size).setScale(2, BigDecimal.RoundingMode.HALF_UP).toDouble
           println("Done: " + total + " at : " + new Date() + " RF: " + rf + " total sum: " + replication.sum / nodeneighbours.size)
-       
+
           bwtime.write(total + "," + (new Date().getTime - startime) + "," + rf + "\n")
           bwtime.flush()
           replication.reset()
-        
+
           if (monitorShuffleData) {
             val json = fromURL(url).mkString
             val stages: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("mapPartitions at GraphImpl.scala:207") }
@@ -389,8 +390,8 @@ object NewTestGraphExact {
         }
         //        logger.info("Completed in time : " + (new Date().getTime - startime))
         println("Completed in time : " + (new Date().getTime - startimeTotal))
-        for(i<-0 to 7){
-          println(i+","+partitionDistribution.get(i).get+"\n")
+        for (i <- 0 to 7) {
+          println(i + "," + partitionDistribution.get(i).get + "\n")
         }
 
         /*
@@ -401,7 +402,7 @@ object NewTestGraphExact {
           graph.vertices.collect.foreach {
             case (vertexId, node) => {
               //        println("node summary for " + value + " : " + original_value.getNodeSummary.estimate())
-              output.append(vertexId + "," + node.getsummary(0L) + "," + node.updateCount + "," + nodeneighbours.get(vertexId).get.size + "\n")
+              output.append(vertexId + "," + node._1.getsummary(0L) + "," + node._1.updateCount + "," + nodeneighbours.get(vertexId).get.size + "\n")
               if (vertexId == 86l) {
                 println
               }
@@ -430,14 +431,14 @@ object NewTestGraphExact {
 
   }
 
-  def vertexProgram(id: VertexId, value: NewNodeExact, msgSum: (Int, collection.mutable.Set[(Long, Long, Long, Int)])): NewNodeExact = {
-
+  def vertexProgram(id: VertexId, value: (NewNodeExact, Boolean), msgSum: (Int, collection.mutable.Set[(Long, Long, Long, Int)])): (NewNodeExact, Boolean) = {
+    
     var changed = false
     var superstep = msgSum._1
-    var summary = value.summary
-    var updatecnt = value.updateCount
+    var summary = value._1.summary
+    var updatecnt = value._1.updateCount
     val filteredmsg = msgSum._2.filter(p => {
-      if (p._1 == value.node) {
+      if (p._1 == value._1.node) {
         true
       } else {
         false
@@ -456,10 +457,10 @@ object NewTestGraphExact {
 
         //check if the current node and the target node is same 
 
-        if (src == value.node) {
+        if (src == value._1.node) {
           //found edge with src and target node for 1st msg 
           if (distance == 0) { //if its distance 0 just update
-            if (value.summary(0) != null) {
+            if (value._1.summary(0) != null) {
               summary.update(0, summary(0).+(dst -> time))
 
               changed = true
@@ -484,7 +485,7 @@ object NewTestGraphExact {
 
         filteredmsg.foreach({
           x =>
-            if (x._1 == value.node) {
+            if (x._1 == value._1.node) {
               addSummary(msgSum._1, x._2, x._3)
             }
         })
@@ -534,9 +535,12 @@ object NewTestGraphExact {
         }
       }
     }
-    if (changed)
+    if (changed) {
       updatecnt = updatecnt + 1
-    new NewNodeExact(value.node, summary, superstep, changed, updatecnt)
+      (new NewNodeExact(value._1.node, summary, superstep, updatecnt), true)
+    } else {
+      (value._1, false)
+    }
 
   }
   def messageCombiner(msg1: (Int, collection.mutable.Set[(Long, Long, Long, Int)]), msg2: (Int, collection.mutable.Set[(Long, Long, Long, Int)])): (Int, collection.mutable.Set[(Long, Long, Long, Int)]) = {
@@ -560,7 +564,7 @@ object NewTestGraphExact {
 
   }
 
-  def sendMessage(triplet: EdgeTriplet[NewNodeExact, Long]): Iterator[(VertexId, (Int, collection.mutable.Set[(Long, Long, Long, Int)]))] = {
+  def sendMessage(triplet: EdgeTriplet[(NewNodeExact, Boolean), Long]): Iterator[(VertexId, (Int, collection.mutable.Set[(Long, Long, Long, Int)]))] = {
     //    val inspectionset = Set(3460l, 3881l, 3602l, 3761l, 3829l, 3466l, 3915l, 3554l)
     //    if (inspectionset.contains(triplet.srcId)) {
     //      //      println(triplet.srcId + "->" + triplet.dstId)
@@ -570,8 +574,8 @@ object NewTestGraphExact {
 
     var msg: collection.mutable.Set[(Long, Long, Long, Int)] = null
     if (triplet.srcAttr != null) {
-      if (triplet.srcAttr.ischanged) {
-        val sum = triplet.srcAttr.summary(triplet.srcAttr.currentsuperstep)
+      if (triplet.srcAttr._2) {
+        val sum = triplet.srcAttr._1.summary(triplet.srcAttr._1.currentsuperstep)
         if (sum != null) {
           val tempItertator = sum.keysIterator
           while (tempItertator.hasNext) {
@@ -579,9 +583,9 @@ object NewTestGraphExact {
             val time = sum.get(value).get
             if (triplet.dstId != value) {
               if (msg == null) {
-                msg = collection.mutable.Set((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr.currentsuperstep + 1))
+                msg = collection.mutable.Set((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr._1.currentsuperstep + 1))
               } else {
-                msg.add((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr.currentsuperstep + 1))
+                msg.add((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr._1.currentsuperstep + 1))
               }
             }
           }
@@ -589,7 +593,7 @@ object NewTestGraphExact {
           if (msg == null) {
             Iterator.empty
           } else
-            Iterator((triplet.dstId, (triplet.srcAttr.currentsuperstep + 1, msg)))
+            Iterator((triplet.dstId, (triplet.srcAttr._1.currentsuperstep + 1, msg)))
         } else
           Iterator.empty
       } else

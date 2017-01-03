@@ -9,19 +9,19 @@ import scala.collection.immutable.HashSet
 /**
  * @author Rohit
  */
-class NewNodeExact(nodeId: Long, summ: Array[HashMap[Long,Long]],css:Int,changed:Boolean,cnt:Int) extends Serializable {
-  def this(nodeId: Long, summ: Array[HashMap[Long,Long]]){
-    this(nodeId,summ,0,false,0)
+class NewNodeExact(nodeId: Long, summ: Array[HashMap[Long, Long]], css: Int, cnt: Int) extends Serializable {
+  def this(nodeId: Long, summ: Array[HashMap[Long, Long]]) {
+    this(nodeId, summ, 0, 0)
   }
- 
+  val objectid = java.util.UUID.randomUUID.toString
   val node: Long = nodeId
   val currentsuperstep = css
   val updateCount = cnt
-  val summary: Array[HashMap[Long,Long]] = summ
-  val ischanged = changed
+  val summary: Array[HashMap[Long, Long]] = summ
+  //  val ischanged = changed
   def getsummary(window: Long): Int = {
 
-    var sum: HashSet[Long] =new HashSet
+    var sum: HashSet[Long] = new HashSet
     for (i <- 0 until summary.length) {
 
       val x = summary(i)
@@ -30,7 +30,7 @@ class NewNodeExact(nodeId: Long, summ: Array[HashMap[Long,Long]],css:Int,changed
         while (iterator.hasNext) {
           val value = iterator.next()
           if (x.get(value).get > window) {
-           sum= sum.+(value)
+            sum = sum.+(value)
 
           }
         }
