@@ -315,7 +315,7 @@ object NewTestGraph {
             val json = fromURL(url).mkString
             val stages: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("mapPartitions at GraphImpl.scala:207") }
             //            println("stages count: " + stages.size)
-            //             println("stages count: " + stages.map(_.shuffleReadBytes).sum / (1024 * 1024))
+                         println("stages count: " + stages.map(_.shuffleReadBytes).sum / (1024 * 1024))
             bwshuffle.write(total + "," + stages.map(_.shuffleWriteBytes).sum / (1024 * 1024) + "," + stages.map(_.shuffleReadBytes).sum / (1024 * 1024) + "\n")
             bwshuffle.flush()
           }

@@ -49,7 +49,7 @@ object NewTestGraphExact {
       conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       conf.registerKryoClasses(Array(classOf[NewNodeExact]))
       conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
-      
+
       if (mode.equals("local")) {
         conf.setMaster("local[*]")
       }
@@ -211,7 +211,6 @@ object NewTestGraphExact {
             users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(new HashPartitioner(numPartitions)).setName("User RDD").cache()
 
             relationships = sc.parallelize(inputEdgeArray.result(), numPartitions).cache().setName("Relationship RDD").cache()
-
 
             if (storage) {
 
@@ -381,16 +380,19 @@ object NewTestGraphExact {
           if (monitorShuffleData) {
             val json = fromURL(url).mkString
             val stages: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("mapPartitions at GraphImpl.scala:207") }
-            //            println("stages count: " + stages.size)
+            val remoteRead = stages.map(_.accumulatorUpdates
+              .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
+              map(_.value.toLong).sum).sum/ (1024 * 1024)
+                      println("remote read: " + remoteRead)
             //             println("stages count: " + stages.map(_.shuffleReadBytes).sum / (1024 * 1024))
-            bwshuffle.write(total + "," + stages.map(_.shuffleWriteBytes).sum / (1024 * 1024) + "," + stages.map(_.shuffleReadBytes).sum / (1024 * 1024) + "\n")
+            bwshuffle.write(total + "," + remoteRead + "," + stages.map(_.shuffleReadBytes).sum / (1024 * 1024) + "\n")
             bwshuffle.flush()
           }
           startime = new Date().getTime
         }
         //        logger.info("Completed in time : " + (new Date().getTime - startime))
         println("Completed in time : " + (new Date().getTime - startimeTotal))
-        for (i <- 0 to 7) {
+        for (i <- 0 to numPartitions - 1) {
           println(i + "," + partitionDistribution.get(i).get + "\n")
         }
 
@@ -432,7 +434,7 @@ object NewTestGraphExact {
   }
 
   def vertexProgram(id: VertexId, value: (NewNodeExact, Boolean), msgSum: (Int, collection.mutable.Set[(Long, Long, Long, Int)])): (NewNodeExact, Boolean) = {
-    
+
     var changed = false
     var superstep = msgSum._1
     var summary = value._1.summary
