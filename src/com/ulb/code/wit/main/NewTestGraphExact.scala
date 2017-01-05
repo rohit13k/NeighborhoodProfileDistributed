@@ -97,7 +97,7 @@ object NewTestGraphExact {
         var oldnodesAttribute: Map[VertexId, NewNodeExact] = Map[Long, NewNodeExact]()
         val nodeneighbours = collection.mutable.Map[Long, collection.mutable.Set[Long]]()
         //  var allnodes = collection.mutable.Map[Long, Int]()
-        var nodeReplicationCnt = collection.mutable.Map[Long, Int]()
+        var nodeReplicationCnt = collection.mutable.Map[Long, collection.mutable.Set[Int]]()
         var msgs: collection.mutable.Set[(Long, Long, Long, Int)] = collection.mutable.Set[(Long, Long, Long, Int)]()
         var startime = new Date().getTime
         var startimeTotal = new Date().getTime
@@ -208,7 +208,7 @@ object NewTestGraphExact {
           val defaultNode = (new NewNodeExact(-1, new Array[scala.collection.immutable.HashMap[Long, Long]](distance)), java.lang.Boolean.FALSE)
           if (isFirst) {
 
-            users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(new HashPartitioner(numPartitions)).setName("User RDD").cache()
+            users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(new VertexPartitioner(numPartitions)).setName("User RDD").cache()
 
             relationships = sc.parallelize(inputEdgeArray.result(), numPartitions).cache().setName("Relationship RDD").cache()
 
@@ -231,7 +231,7 @@ object NewTestGraphExact {
               else
                 true
 
-            }).partitionBy(new HashPartitioner(numPartitions)).cache()
+            }).partitionBy(new VertexPartitioner(numPartitions)).cache()
             newusers.count() //materialize the new users
 
             val oldusers = graph.vertices
@@ -310,16 +310,18 @@ object NewTestGraphExact {
               mypartitioner = new MyPartitionStrategy(null, degree, null, nodeupdatecount, null)
             } else {
               //update replication count of every node
-              var replicatednode = 0l;
-              val nodeRepCntOld = nodeReplicationCnt.clone()
+              var replicatednode = (0l,0);
+              val nodeRepCntOld = nodeReplicationCnt.clone().mapValues { x => x.size }
               edges.foreach {
                 case ((src, dst), t) =>
                   {
                     replicatednode = getUBHPartition(src, dst, numPartitions, degree, nodeupdatecount, nodeRepCntOld)
-                    nodeReplicationCnt.update(replicatednode, nodeReplicationCnt.getOrElse(replicatednode, 0) + 1)
+                    var temp=nodeReplicationCnt.getOrElse(replicatednode._1, collection.mutable.Set[Int]())
+                    temp=temp.+=(replicatednode._2)
+                    nodeReplicationCnt.update(replicatednode._1, temp)
                   }
               }
-              mypartitioner = new MyPartitionStrategy(null, degree, null, nodeupdatecount, nodeReplicationCnt)
+              mypartitioner = new MyPartitionStrategy(null, degree, null, nodeupdatecount, nodeReplicationCnt.map(x=>(x._1,x._2.size)))
             }
 
           }
@@ -605,23 +607,23 @@ object NewTestGraphExact {
     }
 
   }
-  def getUBHPartition(src: Long, dst: Long, numParts: Int, nodedegree: collection.mutable.Map[Long, Int], nodeUpdate: scala.collection.immutable.Map[Long, Int], nodeReplication: scala.collection.mutable.Map[Long, Int]): Long = {
+  def getUBHPartition(src: Long, dst: Long, numParts: Int, nodedegree: collection.mutable.Map[Long, Int], nodeUpdate: scala.collection.immutable.Map[Long, Int], nodeReplication: scala.collection.Map[Long, Int]): (Long,Int) = {
     val srcUpdateCount = nodeUpdate.getOrElse(src, 0)
     val dstUpdateCount = nodeUpdate.getOrElse(dst, 0)
     val srcReplicationCount = nodeReplication.getOrElse(src, 0)
     val dstReplicationCount = nodeReplication.getOrElse(dst, 0)
     if ((srcUpdateCount * srcReplicationCount) > (dstUpdateCount * dstReplicationCount)) {
-      dst
+      (dst,math.abs(src.hashCode()) % numParts)
     } else if ((srcUpdateCount * srcReplicationCount) < (dstUpdateCount * dstReplicationCount)) {
-      src
+      (src,math.abs(dst.hashCode()) % numParts)
     } else {
       //if update count is same follow degree based approach
       val srcDegree = nodedegree.getOrElse(src, 0)
       val dstDegree = nodedegree.getOrElse(dst, 0)
       if (srcDegree < dstDegree) {
-        dst
+        (dst,math.abs(src.hashCode()) % numParts)
       } else {
-        src
+        (src,math.abs(dst.hashCode()) % numParts)
       }
     }
   }

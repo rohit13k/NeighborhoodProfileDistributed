@@ -122,7 +122,7 @@ class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Lon
 
     override def getPartition(src: VertexId, dst: VertexId, numParts: PartitionID): PartitionID = {
 
-      1
+      0
 
     }
   }
