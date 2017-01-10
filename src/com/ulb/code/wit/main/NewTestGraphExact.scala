@@ -30,6 +30,8 @@ import com.ulb.code.wit.util.NewNodeExact
 import scala.io.Source.fromURL
 import com.ulb.code.wit.util.SparkAppStats.SparkStage
 import org.apache.spark.util.CollectionAccumulator
+import scala.collection.mutable.ListBuffer
+import com.ulb.code.wit.util.LoadStatsCalculator
 object NewTestGraphExact {
 
   val logger = Logger.getLogger(getClass().getName());
@@ -38,7 +40,7 @@ object NewTestGraphExact {
     try {
       Logger.getLogger("org").setLevel(Level.OFF)
       Logger.getLogger("akka").setLevel(Level.OFF)
-      val configFile = args(0).toString
+      val configFile = args(0)
       prop.load(new FileInputStream(configFile))
 
       //      logger.info("Test Started")
@@ -47,26 +49,39 @@ object NewTestGraphExact {
       val mode = prop.getProperty("mode", "cluster")
       val conf = new SparkConf().setAppName("NeighbourHoodProfileExact")
       conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      conf.registerKryoClasses(Array(classOf[NewNodeExact]))
-      conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
+      conf.registerKryoClasses(Array(classOf[NewNodeExact], classOf[VertexPartitioner], classOf[MyPartitionStrategy]))
+
+      // conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
 
       if (mode.equals("local")) {
         conf.setMaster("local[*]")
       }
 
       val sc = new SparkContext(conf)
+      println("spark contest status: " + sc.isStopped)
       val numPartitions = Integer.parseInt(prop.getProperty("partition", "6"))
-      val inputfile = prop.getProperty("inputfile", "facebook_reduced.csv")
-      val outputFile = prop.getProperty("outputFile", "facebook_reduced_estimate.csv")
+      var inputfile = prop.getProperty("inputfile", "facebook_reduced.csv")
+      var partionStrategy = prop.getProperty("partionStrategy", "")
+      val batch = Integer.parseInt(prop.getProperty("batch", "1000"))
+      var outputFile = prop.getProperty("outputFile", "facebook_reduced_estimate.csv")
+      val distance = Integer.parseInt(prop.getProperty("distance", "3"))
+      if (args.length > 2) {
+        //override the application properties parameter with command line parameters
+        inputfile = args(2)
+        partionStrategy = args(3)
+
+        outputFile = inputfile.replace(".csv", "_estimate") + "_" + distance + ".csv"
+
+      }
       val folder = prop.getProperty("folder", "./data/")
       val tmpfolder = prop.getProperty("tmpfolder", "")
       val num_buckets = Integer.parseInt(prop.getProperty("number_of_bucket", "256"))
-      val distance = Integer.parseInt(prop.getProperty("distance", "3"))
+
       val storage = Boolean.parseBoolean((prop.getProperty("storage", "false")))
-      val batch = Integer.parseInt(prop.getProperty("batch", "1000"))
+
       val writeResult = Boolean.parseBoolean((prop.getProperty("writeResult", "false")))
       val getReplicationFactor = Boolean.parseBoolean((prop.getProperty("getReplicationFactor", "false")))
-      val partionStrategy = prop.getProperty("partionStrategy", "")
+
       val hdrfLambda = (prop.getProperty("hdrfLambda", "1")).toDouble
       val ftime = new File(folder + "Time_" + inputfile.replace(".csv", "") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
       val bwtime = new BufferedWriter(new FileWriter(ftime))
@@ -76,6 +91,7 @@ object NewTestGraphExact {
       if (!tmpfolder.equals(""))
         sc.setCheckpointDir(tmpfolder)
       try {
+        println("input File:" + inputfile + " partitioner: " + partionStrategy)
         val itteration = distance - 1
         var line = ""
         var output = new StringBuilder
@@ -185,8 +201,9 @@ object NewTestGraphExact {
 
           }
           if (!isFirst) {
+            val nodesbc = sc.broadcast(nodes)
             oldnodesAttribute = graph.vertices.filter(x => {
-              if (nodes.contains(x._1)) {
+              if (nodesbc.value.contains(x._1)) {
                 true
               } else {
                 false
@@ -225,8 +242,9 @@ object NewTestGraphExact {
 
           } else {
             //creating new user rdd by removing existing users in graph from the list of new users
+            val nodeneighbourbc = sc.broadcast(nodeneighbours)
             var newusers = sc.parallelize(inputVertexArray.result(), numPartitions).filter(x => {
-              if (nodeneighbours.contains(x._1))
+              if (nodeneighbourbc.value.contains(x._1))
                 false
               else
                 true
@@ -235,12 +253,12 @@ object NewTestGraphExact {
             newusers.count() //materialize the new users
 
             val oldusers = graph.vertices
-            users = oldusers.union(newusers).coalesce(numPartitions, false).cache().setName("updated Users RDD")
+            users = oldusers.union(newusers).cache().setName("updated Users RDD")
             val newrelationships: RDD[Edge[Long]] = sc.parallelize(inputEdgeArray.result(), numPartitions)
 
             //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
 
-            relationships = graph.edges.union(newrelationships).coalesce(numPartitions, false).cache().setName("updated edge RDD")
+            relationships = graph.edges.union(newrelationships).cache().setName("updated edge RDD")
             //      graph.unpersist(false)
 
             if (storage) {
@@ -248,9 +266,6 @@ object NewTestGraphExact {
             } else {
               graph = Graph(users, relationships, defaultNode)
             }
-
-            graph.vertices.setName("gu vertex")
-            graph.edges.setName("gu edges")
 
             newrelationships.unpersist(false);
             newusers.unpersist(false)
@@ -260,9 +275,19 @@ object NewTestGraphExact {
           val newgraph = graph
           //          graph.pageRank(100, .01).vertices.take(10)
           //updating degree for all nodes based on the edge batch
+          if (partionStrategy.equals("HURL")) {
+            val nodeupdatecount = graph.vertices.map(x => {
+              (x._1, x._2._1.updateCount)
+            }).collect().map(f => {
+              f._1 -> f._2
+            }).toMap
+            globalstats.nodeactivity = nodeupdatecount
+          }
+
           edges.foreach {
             case ((src, dst), t) =>
               {
+
                 var temp = nodeneighbours.getOrElse(src, collection.mutable.Set[Long]())
                 temp.add(dst)
                 nodeneighbours.put(src, temp)
@@ -273,6 +298,8 @@ object NewTestGraphExact {
                   globalstats.nodedegree.put(src, nodeneighbours.getOrElse(src, collection.mutable.Set[Long]()).size)
                   globalstats.nodedegree.put(dst, nodeneighbours.getOrElse(dst, collection.mutable.Set[Long]()).size)
                   globalstats.updatePartitionHDRF(src, dst, numPartitions)
+                } else if (partionStrategy.equals("HURL")) {
+                  globalstats.updatePartitionHURL(src, dst, numPartitions)
                 }
 
               }
@@ -280,7 +307,10 @@ object NewTestGraphExact {
 
           if (partionStrategy.equals("HDRF")) {
             partitionlookup = sc.broadcast(globalstats.edgepartitionsummary)
-            mypartitioner = new MyPartitionStrategy(partitionlookup.value, nodeneighbours.map(f => (f._1, f._2.size)))
+            mypartitioner = new MyPartitionStrategy(partitionlookup.value, null)
+          } else if (partionStrategy.equals("HURL")) {
+            partitionlookup = sc.broadcast(globalstats.edgepartitionsummary)
+            mypartitioner = new MyPartitionStrategy(partitionlookup.value, null)
           } else if (partionStrategy.equals("DBH")) {
 
             val degree = sc.broadcast(nodeneighbours.map(f => (f._1, f._2.size)))
@@ -310,27 +340,29 @@ object NewTestGraphExact {
               mypartitioner = new MyPartitionStrategy(null, degree, null, nodeupdatecount, null)
             } else {
               //update replication count of every node
-              var replicatednode = (0l,0);
+              var replicatednode = (0l, 0);
               val nodeRepCntOld = nodeReplicationCnt.clone().mapValues { x => x.size }
               edges.foreach {
                 case ((src, dst), t) =>
                   {
                     replicatednode = getUBHPartition(src, dst, numPartitions, degree, nodeupdatecount, nodeRepCntOld)
-                    var temp=nodeReplicationCnt.getOrElse(replicatednode._1, collection.mutable.Set[Int]())
-                    temp=temp.+=(replicatednode._2)
+                    var temp = nodeReplicationCnt.getOrElse(replicatednode._1, collection.mutable.Set[Int]())
+                    temp = temp.+=(replicatednode._2)
                     nodeReplicationCnt.update(replicatednode._1, temp)
                   }
               }
-              mypartitioner = new MyPartitionStrategy(null, degree, null, nodeupdatecount, nodeReplicationCnt.map(x=>(x._1,x._2.size)))
+              mypartitioner = new MyPartitionStrategy(null, degree, null, nodeupdatecount, nodeReplicationCnt.map(x => (x._1, x._2.size)))
             }
 
           }
 
           if (!partionStrategy.equals(""))
             graph = graph.partitionBy(mypartitioner.fromString(partionStrategy), numPartitions).groupEdges((a, b) => Math.max(a, b))
+          graph.vertices.setName("gu vertex")
+          graph.edges.setName("gu edges")
 
           graph.cache()
-
+          val partitiondata = new ListBuffer[Int]()
           if (getReplicationFactor) {
 
             graph.edges.foreachPartition(x => {
@@ -345,9 +377,16 @@ object NewTestGraphExact {
 
             val partition = graph.edges.mapPartitionsWithIndex((id, iter) => Array((id, iter.size)).iterator, true).collect()
             for ((id, count) <- partition) {
+              partitiondata += count
               partitionDistribution.put(id, partitionDistribution.getOrElse(id, "") + count + ",")
 
             }
+
+          }
+
+          var relativeSD = 0.0
+          if (partitiondata.size > 0) {
+            relativeSD = LoadStatsCalculator.getLoadRelativeStandardDeviation(partitiondata.toList)
           }
 
           if (!tmpfolder.equals("")) {
@@ -373,9 +412,9 @@ object NewTestGraphExact {
           relationships.unpersist(blocking = false)
           //            logger.info("Done: " + total + " at : " + new Date())
           val rf: Double = BigDecimal(replication.value.toDouble / nodeneighbours.size).setScale(2, BigDecimal.RoundingMode.HALF_UP).toDouble
-          println("Done: " + total + " at : " + new Date() + " RF: " + rf + " total sum: " + replication.sum / nodeneighbours.size)
+          println("Done: " + total + " at : " + new Date() + " RF: " + rf + " lrsd " + relativeSD)
 
-          bwtime.write(total + "," + (new Date().getTime - startime) + "," + rf + "\n")
+          bwtime.write(total + "," + (new Date().getTime - startime) + "," + rf + "," + relativeSD + "\n")
           bwtime.flush()
           replication.reset()
 
@@ -384,8 +423,8 @@ object NewTestGraphExact {
             val stages: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("mapPartitions at GraphImpl.scala:207") }
             val remoteRead = stages.map(_.accumulatorUpdates
               .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
-              map(_.value.toLong).sum).sum/ (1024 * 1024)
-                      println("remote read: " + remoteRead)
+              map(_.value.toLong).sum).sum / (1024 * 1024)
+            println("remote read: " + remoteRead)
             //             println("stages count: " + stages.map(_.shuffleReadBytes).sum / (1024 * 1024))
             bwshuffle.write(total + "," + remoteRead + "," + stages.map(_.shuffleReadBytes).sum / (1024 * 1024) + "\n")
             bwshuffle.flush()
@@ -403,6 +442,7 @@ object NewTestGraphExact {
      * 
      */
         if (writeResult) {
+          println("writing result")
           graph.vertices.collect.foreach {
             case (vertexId, node) => {
               //        println("node summary for " + value + " : " + original_value.getNodeSummary.estimate())
@@ -417,13 +457,21 @@ object NewTestGraphExact {
           bw.write(output.toString())
           bw.close()
         }
+      } catch {
+        case e: Exception => {
+          //        logger.error(e)
+          e.printStackTrace()
+        }
+
       } finally {
+
         bwtime.flush()
         bwtime.close()
         if (bwshuffle != null) {
           bwshuffle.flush()
           bwshuffle.close()
         }
+        // sc.stop()
       }
     } catch {
       case e: Exception => {
@@ -432,6 +480,8 @@ object NewTestGraphExact {
       }
 
     }
+    println("Finished exiting")
+    System.exit(1)
 
   }
 
@@ -607,23 +657,23 @@ object NewTestGraphExact {
     }
 
   }
-  def getUBHPartition(src: Long, dst: Long, numParts: Int, nodedegree: collection.mutable.Map[Long, Int], nodeUpdate: scala.collection.immutable.Map[Long, Int], nodeReplication: scala.collection.Map[Long, Int]): (Long,Int) = {
+  def getUBHPartition(src: Long, dst: Long, numParts: Int, nodedegree: collection.mutable.Map[Long, Int], nodeUpdate: scala.collection.immutable.Map[Long, Int], nodeReplication: scala.collection.Map[Long, Int]): (Long, Int) = {
     val srcUpdateCount = nodeUpdate.getOrElse(src, 0)
     val dstUpdateCount = nodeUpdate.getOrElse(dst, 0)
     val srcReplicationCount = nodeReplication.getOrElse(src, 0)
     val dstReplicationCount = nodeReplication.getOrElse(dst, 0)
     if ((srcUpdateCount * srcReplicationCount) > (dstUpdateCount * dstReplicationCount)) {
-      (dst,math.abs(src.hashCode()) % numParts)
+      (dst, math.abs(src.hashCode()) % numParts)
     } else if ((srcUpdateCount * srcReplicationCount) < (dstUpdateCount * dstReplicationCount)) {
-      (src,math.abs(dst.hashCode()) % numParts)
+      (src, math.abs(dst.hashCode()) % numParts)
     } else {
       //if update count is same follow degree based approach
       val srcDegree = nodedegree.getOrElse(src, 0)
       val dstDegree = nodedegree.getOrElse(dst, 0)
       if (srcDegree < dstDegree) {
-        (dst,math.abs(src.hashCode()) % numParts)
+        (dst, math.abs(src.hashCode()) % numParts)
       } else {
-        (src,math.abs(dst.hashCode()) % numParts)
+        (src, math.abs(dst.hashCode()) % numParts)
       }
     }
   }

@@ -118,6 +118,14 @@ class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Lon
 
     }
   }
+  case object HURL extends PartitionStrategy {
+
+    override def getPartition(src: VertexId, dst: VertexId, numParts: PartitionID): PartitionID = {
+
+      partitionlookup.getOrElse((src, dst), (math.abs(Math.round(Math.random() * 10000) % numParts)).toInt)
+
+    }
+  }
   case object ONLYONE extends PartitionStrategy {
 
     override def getPartition(src: VertexId, dst: VertexId, numParts: PartitionID): PartitionID = {
@@ -140,6 +148,7 @@ class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Lon
     case "UBH"                      => UBH
     case "UBHAdvanced"              => UBHAdvanced
     case "ONLYONE"                  => ONLYONE
+    case "HURL"                     => HURL
     case _                          => throw new IllegalArgumentException("Invalid PartitionStrategy: " + s)
   }
 

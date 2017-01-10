@@ -8,8 +8,8 @@ class VertexPartitioner(numParts: Int) extends Partitioner {
   override def getPartition(key: Any): Int =
     {
       val out = toLong(key.toString)
-      //out.hashCode() % numPartitions
-      0
+      math.abs(out.hashCode()) % numPartitions
+      
     }
 
   override def equals(other: Any): Boolean = other match {
