@@ -9,7 +9,7 @@ class VertexPartitioner(numParts: Int) extends Partitioner {
     {
       val out = toLong(key.toString)
       math.abs(out.hashCode()) % numPartitions
-      
+
     }
 
   override def equals(other: Any): Boolean = other match {
@@ -22,10 +22,14 @@ class VertexPartitioner(numParts: Int) extends Partitioner {
   def toLong(s: String): Long =
     {
       try {
+
         s.toLong
 
       } catch {
-        case e: Exception => 1l
+        case e: Exception => {
+          println("error in vertex partioner")
+          1l
+        }
       }
     }
 }

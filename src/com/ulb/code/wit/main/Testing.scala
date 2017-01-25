@@ -80,5 +80,10 @@ object Testing {
     temp.count()
     println("done")
     nrd.partitionBy(new HashPartitioner(2))
+    multi("")_
   }
+  def multi(x:String)(a:String)(b:Int):Int={
+    0
+  }
+  
 }

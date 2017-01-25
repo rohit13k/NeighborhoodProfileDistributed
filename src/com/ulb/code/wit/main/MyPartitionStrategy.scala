@@ -88,6 +88,26 @@ class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Lon
       }
     }
   }
+  case object UBHreversed extends PartitionStrategy {
+    override def getPartition(src: VertexId, dst: VertexId, numParts: PartitionID): PartitionID = {
+      val srcUpdateCount = nodeUpdate.getOrElse(src, 0)
+      val dstUpdateCount = nodeUpdate.getOrElse(dst, 0)
+      if (srcUpdateCount < dstUpdateCount) {
+        math.abs(src.hashCode()) % numParts
+      } else if (srcUpdateCount < dstUpdateCount) {
+        math.abs(dst.hashCode()) % numParts
+      } else {
+        //if update count is same follow degree based approach
+        val srcDegree = nodedegree.getOrElse(src, 0)
+        val dstDegree = nodedegree.getOrElse(dst, 0)
+        if (srcDegree < dstDegree) {
+          math.abs(src.hashCode()) % numParts
+        } else {
+          math.abs(dst.hashCode()) % numParts
+        }
+      }
+    }
+  }
   case object ReverseABH extends PartitionStrategy {
     override def getPartition(src: VertexId, dst: VertexId, numParts: PartitionID): PartitionID = {
       val srcDegree = nodedegree.getOrElse(src, 0)
@@ -149,6 +169,8 @@ class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Lon
     case "UBHAdvanced"              => UBHAdvanced
     case "ONLYONE"                  => ONLYONE
     case "HURL"                     => HURL
+    case "iDBH"                     => DBH
+    case "UBHReversed"              => UBHreversed
     case _                          => throw new IllegalArgumentException("Invalid PartitionStrategy: " + s)
   }
 

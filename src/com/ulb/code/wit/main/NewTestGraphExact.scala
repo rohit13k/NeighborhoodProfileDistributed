@@ -32,11 +32,15 @@ import com.ulb.code.wit.util.SparkAppStats.SparkStage
 import org.apache.spark.util.CollectionAccumulator
 import scala.collection.mutable.ListBuffer
 import com.ulb.code.wit.util.LoadStatsCalculator
+import org.apache.spark.util.LongAccumulator
 object NewTestGraphExact {
 
   val logger = Logger.getLogger(getClass().getName());
   def main(args: Array[String]) {
     val prop = new Properties()
+    var vertexProgramTime: LongAccumulator = null
+    var sendMsgProgramTime: LongAccumulator = null
+    var mergeMsgProgramTime: LongAccumulator = null
     try {
       Logger.getLogger("org").setLevel(Level.OFF)
       Logger.getLogger("akka").setLevel(Level.OFF)
@@ -112,6 +116,7 @@ object NewTestGraphExact {
         var nodes = collection.mutable.Set[Long]()
         var oldnodesAttribute: Map[VertexId, NewNodeExact] = Map[Long, NewNodeExact]()
         val nodeneighbours = collection.mutable.Map[Long, collection.mutable.Set[Long]]()
+        val indegree = collection.mutable.Map[Long, collection.mutable.Set[Long]]()
         //  var allnodes = collection.mutable.Map[Long, Int]()
         var nodeReplicationCnt = collection.mutable.Map[Long, collection.mutable.Set[Int]]()
         var msgs: collection.mutable.Set[(Long, Long, Long, Int)] = collection.mutable.Set[(Long, Long, Long, Int)]()
@@ -122,6 +127,9 @@ object NewTestGraphExact {
         var monitorShuffleData = false
         var masterURL = "localhost"
         val replication = sc.longAccumulator("MyreplicationFactor")
+        vertexProgramTime = sc.longAccumulator("vertexProgramTime")
+        sendMsgProgramTime = sc.longAccumulator("sendMsgProgramTime")
+        mergeMsgProgramTime = sc.longAccumulator("mergeMsgTime")
         //        val edgecount: CollectionAccumulator[String] = sc.collectionAccumulator("EdgeCount")
         if (args.length > 1) {
           monitorShuffleData = true
@@ -225,7 +233,7 @@ object NewTestGraphExact {
           val defaultNode = (new NewNodeExact(-1, new Array[scala.collection.immutable.HashMap[Long, Long]](distance)), java.lang.Boolean.FALSE)
           if (isFirst) {
 
-            users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(new VertexPartitioner(numPartitions)).setName("User RDD").cache()
+            users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(new HashPartitioner(numPartitions)).setName("User RDD").cache()
 
             relationships = sc.parallelize(inputEdgeArray.result(), numPartitions).cache().setName("Relationship RDD").cache()
 
@@ -249,11 +257,11 @@ object NewTestGraphExact {
               else
                 true
 
-            }).partitionBy(new VertexPartitioner(numPartitions)).cache()
-            newusers.count() //materialize the new users
+            }).partitionBy(new HashPartitioner(numPartitions)).cache()
 
             val oldusers = graph.vertices
-            users = oldusers.union(newusers).cache().setName("updated Users RDD")
+            users = oldusers.union(newusers).setName("updated Users RDD").partitionBy(new HashPartitioner(numPartitions)).cache()
+            users.count() //materialize the new users
             val newrelationships: RDD[Edge[Long]] = sc.parallelize(inputEdgeArray.result(), numPartitions)
 
             //creating new relationship rdd by removing existing relationships from graph if the edge is existing 
@@ -294,6 +302,7 @@ object NewTestGraphExact {
                 temp = nodeneighbours.getOrElse(dst, collection.mutable.Set[Long]())
                 temp.add(src)
                 nodeneighbours.put(dst, temp)
+                indegree.put(dst, temp)
                 if (partionStrategy.equals("HDRF")) {
                   globalstats.nodedegree.put(src, nodeneighbours.getOrElse(src, collection.mutable.Set[Long]()).size)
                   globalstats.nodedegree.put(dst, nodeneighbours.getOrElse(dst, collection.mutable.Set[Long]()).size)
@@ -321,6 +330,16 @@ object NewTestGraphExact {
             //          } else if (partionStrategy.equals("ReverseABH")) {
             //            val activity = sc.broadcast(nodeactivity)
             //            mypartitioner = new MyPartitionStrategy(activity.value)
+          } else if (partionStrategy.equals("iDBH")) {
+
+            val idegree = sc.broadcast(indegree.map(f => (f._1, f._2.size)))
+            mypartitioner = new MyPartitionStrategy(idegree.value)
+            //          } else if (partionStrategy.equals("ABH")) {
+            //            val activity = sc.broadcast(nodeactivity)
+            //            mypartitioner = new MyPartitionStrategy(activity.value)
+            //          } else if (partionStrategy.equals("ReverseABH")) {
+            //            val activity = sc.broadcast(nodeactivity)
+            //            mypartitioner = new MyPartitionStrategy(activity.value)
           } else if (partionStrategy.equals("NPH")) {
             val neighbourhoodProfile = graph.vertices.map(x => {
               (x._2._1.node, x._2._1.getsummary(0L).toLong)
@@ -329,7 +348,7 @@ object NewTestGraphExact {
             }).toMap
             val neighbourhoodsize = sc.broadcast(neighbourhoodProfile)
             mypartitioner = new MyPartitionStrategy(null, null, neighbourhoodsize.value, null, null)
-          } else if (partionStrategy.equals("UBH") || partionStrategy.equals("UBHAdvanced")) {
+          } else if (partionStrategy.equals("UBH") || partionStrategy.equals("UBHAdvanced") || partionStrategy.equals("UBHReversed")) {
             val nodeupdatecount = graph.vertices.map(x => {
               (x._1, x._2._1.updateCount)
             }).collect().map(f => {
@@ -337,6 +356,8 @@ object NewTestGraphExact {
             }).toMap
             val degree = nodeneighbours.map(f => (f._1, f._2.size))
             if (partionStrategy.equals("UBH")) {
+              mypartitioner = new MyPartitionStrategy(null, degree, null, nodeupdatecount, null)
+            } else if (partionStrategy.equals("UBHReversed")) {
               mypartitioner = new MyPartitionStrategy(null, degree, null, nodeupdatecount, null)
             } else {
               //update replication count of every node
@@ -360,7 +381,8 @@ object NewTestGraphExact {
             graph = graph.partitionBy(mypartitioner.fromString(partionStrategy), numPartitions).groupEdges((a, b) => Math.max(a, b))
           graph.vertices.setName("gu vertex")
           graph.edges.setName("gu edges")
-
+          newgraph.unpersist(false)
+          newgraph.vertices.unpersist(false);
           graph.cache()
           val partitiondata = new ListBuffer[Int]()
           if (getReplicationFactor) {
@@ -393,7 +415,7 @@ object NewTestGraphExact {
             if (!graph.isCheckpointed)
               graph.checkpoint()
           }
-
+          //          println("vertex partitioner: " + graph.vertices.partitioner.get)
           //                              graph = Pregel(graph, (0, msgs.result()), itteration, EdgeDirection.Either)(vertexProgram, sendMessage, messageCombiner)
           graph = Pregel(graph, (0, msgs.result()), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
           graph.vertices.cache()
@@ -412,11 +434,14 @@ object NewTestGraphExact {
           relationships.unpersist(blocking = false)
           //            logger.info("Done: " + total + " at : " + new Date())
           val rf: Double = BigDecimal(replication.value.toDouble / nodeneighbours.size).setScale(2, BigDecimal.RoundingMode.HALF_UP).toDouble
-          println("Done: " + total + " at : " + new Date() + " RF: " + rf + " lrsd " + relativeSD)
+          println("Done: " + total + " at : " + new Date() + " RF: " + rf + " lrsd " + relativeSD+ "," + vertexProgramTime.value + "," +sendMsgProgramTime.value + "," +mergeMsgProgramTime.value)
 
-          bwtime.write(total + "," + (new Date().getTime - startime) + "," + rf + "," + relativeSD + "\n")
+          bwtime.write(total + "," + (new Date().getTime - startime) + "," + rf + "," + relativeSD + "," + vertexProgramTime.value + "," +sendMsgProgramTime.value +"," + mergeMsgProgramTime.value + "\n")
           bwtime.flush()
           replication.reset()
+          vertexProgramTime.reset()
+          mergeMsgProgramTime.reset()
+          sendMsgProgramTime.reset()
 
           if (monitorShuffleData) {
             val json = fromURL(url).mkString
@@ -483,199 +508,208 @@ object NewTestGraphExact {
     println("Finished exiting")
     System.exit(1)
 
-  }
+    def vertexProgram(id: VertexId, value: (NewNodeExact, Boolean), msgSum: (Int, collection.mutable.Set[(Long, Long, Long, Int)])): (NewNodeExact, Boolean) = {
 
-  def vertexProgram(id: VertexId, value: (NewNodeExact, Boolean), msgSum: (Int, collection.mutable.Set[(Long, Long, Long, Int)])): (NewNodeExact, Boolean) = {
+      val stime = new Date().getTime
+      var changed = false
+      var superstep = msgSum._1
+      var summary = value._1.summary
+      var updatecnt = value._1.updateCount
+      val filteredmsg = msgSum._2.filter(p => {
+        if (p._1 == value._1.node) {
+          true
+        } else {
+          false
+        }
+      })
+      //    val inspectionset = Set(3460l, 3881l, 3602l, 3761l, 3829l, 3466l, 3915l, 3554l)
+      //        val inspectionset = Set(86l)
+      //        if (inspectionset.contains(id)) {
+      //          println(id + " " + msgSum._1)
+      //        }
+      //if inital msg
+      if (msgSum._1 == 0) {
+        val newmsg: scala.collection.mutable.Set[(Int, Long, Long)] = scala.collection.mutable.Set[(Int, Long, Long)]()
 
-    var changed = false
-    var superstep = msgSum._1
-    var summary = value._1.summary
-    var updatecnt = value._1.updateCount
-    val filteredmsg = msgSum._2.filter(p => {
-      if (p._1 == value._1.node) {
-        true
-      } else {
-        false
-      }
-    })
-    //    val inspectionset = Set(3460l, 3881l, 3602l, 3761l, 3829l, 3466l, 3915l, 3554l)
-    //        val inspectionset = Set(86l)
-    //        if (inspectionset.contains(id)) {
-    //          println(id + " " + msgSum._1)
-    //        }
-    //if inital msg
-    if (msgSum._1 == 0) {
-      val newmsg: scala.collection.mutable.Set[(Int, Long, Long)] = scala.collection.mutable.Set[(Int, Long, Long)]()
+        for ((src, dst, time, distance) <- filteredmsg) {
 
-      for ((src, dst, time, distance) <- filteredmsg) {
+          if (src == value._1.node) {
+            //found edge with src and target node for 1st msg 
+            if (distance == 0) { //if its distance 0 just update
+              if (value._1.summary(0) != null) {
+                summary.update(0, summary(0).+(dst -> time))
 
-        //check if the current node and the target node is same 
+                changed = true
+              } else {
+                val temp: collection.immutable.HashMap[Long, Long] = collection.immutable.HashMap(dst -> time)
+                summary.update(0, temp)
+                changed = true
+              }
 
-        if (src == value._1.node) {
-          //found edge with src and target node for 1st msg 
-          if (distance == 0) { //if its distance 0 just update
-            if (value._1.summary(0) != null) {
-              summary.update(0, summary(0).+(dst -> time))
-
-              changed = true
             } else {
-              val temp: collection.immutable.HashMap[Long, Long] = collection.immutable.HashMap(dst -> time)
-              summary.update(0, temp)
-              changed = true
+              newmsg.+=((distance, dst, time))
+
             }
-
-          } else {
-            newmsg.+=((distance, dst, time))
-
           }
         }
-      }
-      val sortedmsg = newmsg.toList.sortBy(f => f._1)
-      for ((d, nodetoAdd, timetoAdd) <- sortedmsg) {
-        addSummary(d, nodetoAdd, timetoAdd)
-      }
-    } else {
-      if (filteredmsg.size > 0) {
+        val sortedmsg = newmsg.toList.sortBy(f => f._1)
+        for ((d, nodetoAdd, timetoAdd) <- sortedmsg) {
+          addSummary(d, nodetoAdd, timetoAdd)
+        }
+      } else {
+        if (filteredmsg.size > 0) {
 
-        filteredmsg.foreach({
-          x =>
-            if (x._1 == value._1.node) {
-              addSummary(msgSum._1, x._2, x._3)
-            }
-        })
+          filteredmsg.foreach({
+            x =>
+              if (x._1 == value._1.node) {
+                addSummary(msgSum._1, x._2, x._3)
+              }
+          })
 
-      }
-    }
-
-    def addSummary(d: Int, nodetoAdd: Long, timetoAdd: Long) {
-      //need to check if present in lower level
-      var skipduetolower = false;
-      for (i <- 0 to d - 1) {
-        if (summary(i) == null) {
-          //          skipduetolower = true
-        } else if (summary(i).get(nodetoAdd).getOrElse(0l) >= timetoAdd) {
-          skipduetolower = true
         }
       }
-      if (!skipduetolower) {
-        if (summary(d) != null) {
-          if (summary(d).contains(nodetoAdd)) {
-            if (summary(d).get(nodetoAdd).get < timetoAdd) {
 
-              summary.update(d, summary(d).+(nodetoAdd -> timetoAdd))
-              changed = true
+      def addSummary(d: Int, nodetoAdd: Long, timetoAdd: Long) {
+        //need to check if present in lower level
+        var skipduetolower = false;
+        for (i <- 0 to d - 1) {
+          if (summary(i) == null) {
+            //          skipduetolower = true
+          } else if (summary(i).get(nodetoAdd).getOrElse(0l) >= timetoAdd) {
+            skipduetolower = true
+          }
+        }
+        if (!skipduetolower) {
+          if (summary(d) != null) {
+            if (summary(d).contains(nodetoAdd)) {
+              if (summary(d).get(nodetoAdd).get < timetoAdd) {
 
-              //need to remove from upper if present at later horizon
-              for (i <- d + 1 to summary.length - 1) {
-                if (summary(i) != null) {
-                  if (summary(i).contains(nodetoAdd)) {
-                    if (summary(i).get(nodetoAdd).get <= timetoAdd) {
-                      summary.update(i, summary(i).-(nodetoAdd))
+                summary.update(d, summary(d).+(nodetoAdd -> timetoAdd))
+                changed = true
+
+                //need to remove from upper if present at later horizon
+                for (i <- d + 1 to summary.length - 1) {
+                  if (summary(i) != null) {
+                    if (summary(i).contains(nodetoAdd)) {
+                      if (summary(i).get(nodetoAdd).get <= timetoAdd) {
+                        summary.update(i, summary(i).-(nodetoAdd))
+                      }
                     }
                   }
                 }
               }
+            } else {
+              summary.update(d, summary(d).+(nodetoAdd -> timetoAdd))
+              changed = true
             }
           } else {
-            summary.update(d, summary(d).+(nodetoAdd -> timetoAdd))
+
+            val temp: collection.immutable.HashMap[Long, Long] = collection.immutable.HashMap(nodetoAdd -> timetoAdd)
+
+            summary.update(d, temp)
             changed = true
           }
+        }
+      }
+      vertexProgramTime.add(new Date().getTime - stime)
+      if (changed) {
+        updatecnt = updatecnt + 1
+        (new NewNodeExact(value._1.node, summary, superstep, updatecnt), true)
+      } else {
+        (value._1, false)
+      }
+
+    }
+    def messageCombiner(msg1: (Int, collection.mutable.Set[(Long, Long, Long, Int)]), msg2: (Int, collection.mutable.Set[(Long, Long, Long, Int)])): (Int, collection.mutable.Set[(Long, Long, Long, Int)]) = {
+      //    val inspectionset = Set(3460l, 3881l, 3602l, 3761l, 3829l, 3466l, 3915l, 3554l)
+      //    if (msg1._1 != msg2._1) {
+      //      for (x <- msg1._2) {
+      //        //check if the current node and the target node is same 
+      //        if (inspectionset.contains(x._1)) {
+      //          //          println(msg1._1)
+      //        }
+      //      }
+      //      for (x <- msg2._2) {
+      //        //check if the current node and the target node is same 
+      //        if (inspectionset.contains(x._1)) {
+      //          //          println(msg1._1)
+      //        }
+      //      }
+      //      //      println(msg1._1)
+      //    }
+      val stime = new Date().getTime
+      val mergedmsg = msg1._2.union(msg2._2)
+      mergeMsgProgramTime.add(new Date().getTime - stime)
+      (msg1._1, mergedmsg)
+
+    }
+
+    def sendMessage(triplet: EdgeTriplet[(NewNodeExact, Boolean), Long]): Iterator[(VertexId, (Int, collection.mutable.Set[(Long, Long, Long, Int)]))] = {
+      //    val inspectionset = Set(3460l, 3881l, 3602l, 3761l, 3829l, 3466l, 3915l, 3554l)
+      //    if (inspectionset.contains(triplet.srcId)) {
+      //      //      println(triplet.srcId + "->" + triplet.dstId)
+      //    } else if (inspectionset.contains(triplet.dstId)) {
+      //      //      println(triplet.srcId + "->" + triplet.dstId)
+      //    }
+      val stime = new Date().getTime
+      var msg: collection.mutable.Set[(Long, Long, Long, Int)] = null
+      if (triplet.srcAttr != null) {
+        if (triplet.srcAttr._2) {
+          val sum = triplet.srcAttr._1.summary(triplet.srcAttr._1.currentsuperstep)
+          if (sum != null) {
+            val tempItertator = sum.keysIterator
+            while (tempItertator.hasNext) {
+              val value = tempItertator.next()
+              val time = sum.get(value).get
+              if (triplet.dstId != value) {
+                if (msg == null) {
+                  msg = collection.mutable.Set((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr._1.currentsuperstep + 1))
+                } else {
+                  msg.add((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr._1.currentsuperstep + 1))
+                }
+              }
+            }
+
+            if (msg == null) {
+              sendMsgProgramTime.add(new Date().getTime - stime)
+              Iterator.empty
+            } else {
+              sendMsgProgramTime.add(new Date().getTime - stime)
+              Iterator((triplet.dstId, (triplet.srcAttr._1.currentsuperstep + 1, msg)))
+            }
+          } else {
+            sendMsgProgramTime.add(new Date().getTime - stime)
+            Iterator.empty
+          }
         } else {
+          sendMsgProgramTime.add(new Date().getTime - stime)
+          Iterator.empty
+        }
+      } else {
+        sendMsgProgramTime.add(new Date().getTime - stime)
+        Iterator.empty
+      }
 
-          val temp: collection.immutable.HashMap[Long, Long] = collection.immutable.HashMap(nodetoAdd -> timetoAdd)
-
-          summary.update(d, temp)
-          changed = true
+    }
+    def getUBHPartition(src: Long, dst: Long, numParts: Int, nodedegree: collection.mutable.Map[Long, Int], nodeUpdate: scala.collection.immutable.Map[Long, Int], nodeReplication: scala.collection.Map[Long, Int]): (Long, Int) = {
+      val srcUpdateCount = nodeUpdate.getOrElse(src, 0)
+      val dstUpdateCount = nodeUpdate.getOrElse(dst, 0)
+      val srcReplicationCount = nodeReplication.getOrElse(src, 0)
+      val dstReplicationCount = nodeReplication.getOrElse(dst, 0)
+      if ((srcUpdateCount * srcReplicationCount) > (dstUpdateCount * dstReplicationCount)) {
+        (dst, math.abs(src.hashCode()) % numParts)
+      } else if ((srcUpdateCount * srcReplicationCount) < (dstUpdateCount * dstReplicationCount)) {
+        (src, math.abs(dst.hashCode()) % numParts)
+      } else {
+        //if update count is same follow degree based approach
+        val srcDegree = nodedegree.getOrElse(src, 0)
+        val dstDegree = nodedegree.getOrElse(dst, 0)
+        if (srcDegree < dstDegree) {
+          (dst, math.abs(src.hashCode()) % numParts)
+        } else {
+          (src, math.abs(dst.hashCode()) % numParts)
         }
       }
     }
-    if (changed) {
-      updatecnt = updatecnt + 1
-      (new NewNodeExact(value._1.node, summary, superstep, updatecnt), true)
-    } else {
-      (value._1, false)
-    }
-
   }
-  def messageCombiner(msg1: (Int, collection.mutable.Set[(Long, Long, Long, Int)]), msg2: (Int, collection.mutable.Set[(Long, Long, Long, Int)])): (Int, collection.mutable.Set[(Long, Long, Long, Int)]) = {
-    //    val inspectionset = Set(3460l, 3881l, 3602l, 3761l, 3829l, 3466l, 3915l, 3554l)
-    //    if (msg1._1 != msg2._1) {
-    //      for (x <- msg1._2) {
-    //        //check if the current node and the target node is same 
-    //        if (inspectionset.contains(x._1)) {
-    //          //          println(msg1._1)
-    //        }
-    //      }
-    //      for (x <- msg2._2) {
-    //        //check if the current node and the target node is same 
-    //        if (inspectionset.contains(x._1)) {
-    //          //          println(msg1._1)
-    //        }
-    //      }
-    //      //      println(msg1._1)
-    //    }
-    (msg1._1, msg1._2.union(msg2._2))
-
-  }
-
-  def sendMessage(triplet: EdgeTriplet[(NewNodeExact, Boolean), Long]): Iterator[(VertexId, (Int, collection.mutable.Set[(Long, Long, Long, Int)]))] = {
-    //    val inspectionset = Set(3460l, 3881l, 3602l, 3761l, 3829l, 3466l, 3915l, 3554l)
-    //    if (inspectionset.contains(triplet.srcId)) {
-    //      //      println(triplet.srcId + "->" + triplet.dstId)
-    //    } else if (inspectionset.contains(triplet.dstId)) {
-    //      //      println(triplet.srcId + "->" + triplet.dstId)
-    //    }
-
-    var msg: collection.mutable.Set[(Long, Long, Long, Int)] = null
-    if (triplet.srcAttr != null) {
-      if (triplet.srcAttr._2) {
-        val sum = triplet.srcAttr._1.summary(triplet.srcAttr._1.currentsuperstep)
-        if (sum != null) {
-          val tempItertator = sum.keysIterator
-          while (tempItertator.hasNext) {
-            val value = tempItertator.next()
-            val time = sum.get(value).get
-            if (triplet.dstId != value) {
-              if (msg == null) {
-                msg = collection.mutable.Set((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr._1.currentsuperstep + 1))
-              } else {
-                msg.add((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr._1.currentsuperstep + 1))
-              }
-            }
-          }
-
-          if (msg == null) {
-            Iterator.empty
-          } else
-            Iterator((triplet.dstId, (triplet.srcAttr._1.currentsuperstep + 1, msg)))
-        } else
-          Iterator.empty
-      } else
-        Iterator.empty
-    } else {
-      Iterator.empty
-    }
-
-  }
-  def getUBHPartition(src: Long, dst: Long, numParts: Int, nodedegree: collection.mutable.Map[Long, Int], nodeUpdate: scala.collection.immutable.Map[Long, Int], nodeReplication: scala.collection.Map[Long, Int]): (Long, Int) = {
-    val srcUpdateCount = nodeUpdate.getOrElse(src, 0)
-    val dstUpdateCount = nodeUpdate.getOrElse(dst, 0)
-    val srcReplicationCount = nodeReplication.getOrElse(src, 0)
-    val dstReplicationCount = nodeReplication.getOrElse(dst, 0)
-    if ((srcUpdateCount * srcReplicationCount) > (dstUpdateCount * dstReplicationCount)) {
-      (dst, math.abs(src.hashCode()) % numParts)
-    } else if ((srcUpdateCount * srcReplicationCount) < (dstUpdateCount * dstReplicationCount)) {
-      (src, math.abs(dst.hashCode()) % numParts)
-    } else {
-      //if update count is same follow degree based approach
-      val srcDegree = nodedegree.getOrElse(src, 0)
-      val dstDegree = nodedegree.getOrElse(dst, 0)
-      if (srcDegree < dstDegree) {
-        (dst, math.abs(src.hashCode()) % numParts)
-      } else {
-        (src, math.abs(dst.hashCode()) % numParts)
-      }
-    }
-  }
-
 }

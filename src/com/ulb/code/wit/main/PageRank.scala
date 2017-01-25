@@ -20,7 +20,7 @@ class PageRank {
 object Rank {
   var minPartitions = 6
   private val logger = LoggerFactory getLogger classOf[PageRank]
-  val tol=0.0001
+  val tol = 0.0001
   val resetProb: Double = 0.15
   def main(args: Array[String]) {
     var starttime = new Date().getTime
@@ -50,10 +50,27 @@ object Rank {
     val graph = Graph.fromEdges(input, defaultVertex, StorageLevel.MEMORY_AND_DISK, StorageLevel.MEMORY_AND_DISK);
     graph.cache()
     graph.vertices.count()
-    val node = graph.pageRank(tol).vertices
-    val result = node.distinct().takeOrdered(50)(Ordering[Double].reverse.on(x => x._2))
-    // println(result.mkString("\n"))
 
+    // println(result.mkString("\n"))
+    val pagerankGraph: Graph[(Double, Double), Double] = graph
+      // Associate the degree with each vertex
+      .outerJoinVertices(graph.outDegrees) {
+        (vid, vdata, deg) => deg.getOrElse(0)
+      }
+      // Set the weight on the edges based on the degree
+      .mapTriplets(e => 1.0 / e.srcAttr)
+      // Set the vertex attributes to (initialPR, delta = 0)
+      .mapVertices { (id, attr) =>
+        if (id == -1) (resetProb, Double.NegativeInfinity) else (0.0, 0.0)
+      }
+      .cache()
+    val initialMessage = resetProb / (1.0 - resetProb)
+    val node = Pregel(pagerankGraph, initialMessage, activeDirection = EdgeDirection.Out)(
+      vertexProgram, sendMessage, messageCombiner)
+      .mapVertices((vid, attr) => attr._1).vertices
+
+    //      val node = graph.pageRank(tol).vertices
+    val result = node.distinct().takeOrdered(50)(Ordering[Double].reverse.on(x => x._2))
     val fil = new File(seeds)
 
     val bw = new BufferedWriter(new FileWriter(fil))
@@ -69,17 +86,17 @@ object Rank {
     bwresult.close()
   }
   def vertexProgram(id: VertexId, attr: (Double, Double), msgSum: Double): (Double, Double) = {
-      val (oldPR, lastDelta) = attr
-      val newPR = oldPR + (1.0 - resetProb) * msgSum
-      (newPR, newPR - oldPR)
-    }
+    val (oldPR, lastDelta) = attr
+    val newPR = oldPR + (1.0 - resetProb) * msgSum
+    (newPR, newPR - oldPR)
+  }
   def sendMessage(edge: EdgeTriplet[(Double, Double), Double]) = {
-      if (edge.srcAttr._2 > tol) {
-        Iterator((edge.dstId, edge.srcAttr._2 * edge.attr))
-      } else {
-        Iterator.empty
-      }
+    if (edge.srcAttr._2 > tol) {
+      Iterator((edge.dstId, edge.srcAttr._2 * edge.attr))
+    } else {
+      Iterator.empty
     }
+  }
 
-    def messageCombiner(a: Double, b: Double): Double = a + b
+  def messageCombiner(a: Double, b: Double): Double = a + b
 }
