@@ -9,11 +9,11 @@ object SparkAppStats {
   /**
    * (partial) representation of a Spark Stage object
    */
-  case class SparkStage(name: String, shuffleWriteBytes: Long, shuffleReadBytes: Long, memoryBytesSpilled: Long, diskBytesSpilled: Long, accumulatorUpdates: List[Details])
+  case class SparkStage(stageId:Int,name: String,submissionTime:String,completionTime:String,details: String, shuffleWriteBytes: Long, shuffleReadBytes: Long, memoryBytesSpilled: Long, diskBytesSpilled: Long, accumulatorUpdates: List[Details])
   case class Details(name: String, id: Int, value: String)
 
   implicit val formats = DefaultFormats
-  var url = "http://rohit:4040/api/v1/applications/app-20170103172313-0010/stages"
+  var url = "http://localhost:4040/api/v1/applications/local-1485446946983/stages"
 
   def main(args: Array[String]) {
     val json = fromURL(url).mkString
@@ -22,7 +22,7 @@ object SparkAppStats {
     println("shuffleWriteBytes: " + stages.map(_.shuffleWriteBytes).sum / (1024 * 1024))
     println("shuffleReadBytes: " + stages.map(_.shuffleReadBytes).sum / (1024 * 1024))
     println("memoryBytesSpilled: " + stages.map(_.memoryBytesSpilled).sum)
-    println("diskBytesSpilled: " + stages.map(_.diskBytesSpilled).sum)
+    println("diskBytesSpilled: " + stages.map(_.details))
    
     val detail = stages.map(_.accumulatorUpdates
         .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.

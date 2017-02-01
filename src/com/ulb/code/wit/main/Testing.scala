@@ -8,14 +8,15 @@ import org.apache.spark.rdd._
 import scala.io.Source
 import org.apache.log4j.Logger
 import org.apache.log4j.Level
+import java.util.Date
 /**
  * @author Rohit
  */
 object Testing {
   def main(args: Array[String]) {
-    for (i <- 0 to -1) {
-      println(i)
-    }
+    val gd=GenerateData
+    println(gd.stringToDate("2017-01-26T18:36:37.171GMT").getTime)
+    
     //    testSpark
   }
   def slidingHyperAnf(vertexList: Array[(Long, NodeApprox)], edgeList: Array[(Long, Long, Long)], distance: Int, numberOfBucket: Int): Array[(Long, NodeApprox)] = {
@@ -82,8 +83,8 @@ object Testing {
     nrd.partitionBy(new HashPartitioner(2))
     multi("")_
   }
-  def multi(x:String)(a:String)(b:Int):Int={
+  def multi(x: String)(a: String)(b: Int): Int = {
     0
   }
-  
+
 }

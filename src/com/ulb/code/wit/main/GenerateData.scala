@@ -6,6 +6,8 @@ import java.io.File
 import java.io.BufferedWriter
 import java.io.FileWriter
 import java.util.Random
+import java.util.Date
+import java.text.SimpleDateFormat
 
 object GenerateData {
   val folder = "D:\\dataset\\"
@@ -123,5 +125,11 @@ object GenerateData {
       }
     }
     bw.close()
+  }
+  def stringToDate(dateString: String): Date = {
+    val updateDate = dateString.replaceAll("T", " ").replaceAll("GMT", "")
+    val formatter: SimpleDateFormat = new SimpleDateFormat("yyyy-mm-dd hh:mm:ss.SSS")
+    val date: Date = formatter.parse(updateDate)
+    return date
   }
 }

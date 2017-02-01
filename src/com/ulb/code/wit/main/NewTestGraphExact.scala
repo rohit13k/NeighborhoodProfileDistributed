@@ -33,6 +33,7 @@ import org.apache.spark.util.CollectionAccumulator
 import scala.collection.mutable.ListBuffer
 import com.ulb.code.wit.util.LoadStatsCalculator
 import org.apache.spark.util.LongAccumulator
+import scala.collection.immutable.List
 object NewTestGraphExact {
 
   val logger = Logger.getLogger(getClass().getName());
@@ -41,6 +42,8 @@ object NewTestGraphExact {
     var vertexProgramTime: LongAccumulator = null
     var sendMsgProgramTime: LongAccumulator = null
     var mergeMsgProgramTime: LongAccumulator = null
+    var mergeMsgProgramCounter: LongAccumulator = null
+    var sendMsgProgramCounter: LongAccumulator = null
     try {
       Logger.getLogger("org").setLevel(Level.OFF)
       Logger.getLogger("akka").setLevel(Level.OFF)
@@ -58,7 +61,7 @@ object NewTestGraphExact {
       // conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
 
       if (mode.equals("local")) {
-        conf.setMaster("local[*]")
+        conf.setMaster("local[1]")
       }
 
       val sc = new SparkContext(conf)
@@ -119,17 +122,22 @@ object NewTestGraphExact {
         val indegree = collection.mutable.Map[Long, collection.mutable.Set[Long]]()
         //  var allnodes = collection.mutable.Map[Long, Int]()
         var nodeReplicationCnt = collection.mutable.Map[Long, collection.mutable.Set[Int]]()
-        var msgs: collection.mutable.Set[(Long, Long, Long, Int)] = collection.mutable.Set[(Long, Long, Long, Int)]()
+        //        var msgs: collection.mutable.Set[(Long, Long, Long, Int)] = collection.mutable.Set[(Long, Long, Long, Int)]()
+        //        var msgs: List[(Long, Long, Long, Int)] = List[(Long, Long, Long, Int)]()
+        var msgsList: ListBuffer[(Long, Long, Long, Int)] = ListBuffer[(Long, Long, Long, Int)]()
         var startime = new Date().getTime
         var startimeTotal = new Date().getTime
         var partitionlookup = sc.broadcast(globalstats.edgepartitionsummary)
         val appid = sc.applicationId
         var monitorShuffleData = false
+        val monitorShuffleTime = true
         var masterURL = "localhost"
         val replication = sc.longAccumulator("MyreplicationFactor")
         vertexProgramTime = sc.longAccumulator("vertexProgramTime")
         sendMsgProgramTime = sc.longAccumulator("sendMsgProgramTime")
         mergeMsgProgramTime = sc.longAccumulator("mergeMsgTime")
+        mergeMsgProgramCounter=sc.longAccumulator("mergeMsgCnt")
+        sendMsgProgramCounter=sc.longAccumulator("sendMsgCnt")
         //        val edgecount: CollectionAccumulator[String] = sc.collectionAccumulator("EdgeCount")
         if (args.length > 1) {
           monitorShuffleData = true
@@ -192,7 +200,7 @@ object NewTestGraphExact {
                     while (iterator.hasNext) {
                       item = iterator.next()
                       if (dst != item._1) //to avoid self addition
-                        msgs.+=((dst, item._1, item._2, i + 1))
+                        msgsList.+=((dst, item._1, item._2, i + 1))
                     }
                   }
                 }
@@ -224,7 +232,7 @@ object NewTestGraphExact {
 
             inputEdgeArray.+=(Edge(node1, node2, time), Edge(node2, node1, time))
 
-            msgs.+=((node1, node2, time, 0), (node2, node1, time, 0))
+            msgsList.+=((node1, node2, time, 0), (node2, node1, time, 0))
             //check if the node is already has a summary in that case generate msg for all distance to be merged
             generateInitialMsg(node1, node2)
             generateInitialMsg(node2, node1)
@@ -417,7 +425,7 @@ object NewTestGraphExact {
           }
           //          println("vertex partitioner: " + graph.vertices.partitioner.get)
           //                              graph = Pregel(graph, (0, msgs.result()), itteration, EdgeDirection.Either)(vertexProgram, sendMessage, messageCombiner)
-          graph = Pregel(graph, (0, msgs.result()), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+          graph = Pregel(graph, (0, msgsList.result()), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
           graph.vertices.cache()
           graph.edges.cache()
           graph.cache()
@@ -427,22 +435,23 @@ object NewTestGraphExact {
           nodes = nodes.empty
           edges = edges.empty
           inputEdgeArray.clear()
-          msgs.clear()
+          msgsList.clear()
           inputVertexArray.clear()
 
           users.unpersist(blocking = false)
           relationships.unpersist(blocking = false)
           //            logger.info("Done: " + total + " at : " + new Date())
           val rf: Double = BigDecimal(replication.value.toDouble / nodeneighbours.size).setScale(2, BigDecimal.RoundingMode.HALF_UP).toDouble
-          println("Done: " + total + " at : " + new Date() + " RF: " + rf + " lrsd " + relativeSD+ "," + vertexProgramTime.value + "," +sendMsgProgramTime.value + "," +mergeMsgProgramTime.value)
+          println("Done: " + total + " at : " + new Date() + " RF: " + rf + " lrsd " + relativeSD + "," + vertexProgramTime.value + "," + sendMsgProgramTime.value + "," + mergeMsgProgramTime.value+ ","+mergeMsgProgramCounter.value+","+sendMsgProgramCounter.value )
 
-          bwtime.write(total + "," + (new Date().getTime - startime) + "," + rf + "," + relativeSD + "," + vertexProgramTime.value + "," +sendMsgProgramTime.value +"," + mergeMsgProgramTime.value + "\n")
+          bwtime.write(total + "," + (new Date().getTime - startime) + "," + rf + "," + relativeSD + "," + vertexProgramTime.value + "," + sendMsgProgramTime.value + "," + mergeMsgProgramTime.value + ","+mergeMsgProgramCounter.value+"\n")
           bwtime.flush()
           replication.reset()
           vertexProgramTime.reset()
           mergeMsgProgramTime.reset()
           sendMsgProgramTime.reset()
-
+          mergeMsgProgramCounter.reset()
+          sendMsgProgramCounter.reset()
           if (monitorShuffleData) {
             val json = fromURL(url).mkString
             val stages: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("mapPartitions at GraphImpl.scala:207") }
@@ -450,14 +459,103 @@ object NewTestGraphExact {
               .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
               map(_.value.toLong).sum).sum / (1024 * 1024)
             println("remote read: " + remoteRead)
+            val stagesReduce: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("reduce at VertexRDDImpl.scala:88") }
+            val remoteReadMsg = stagesReduce.map(_.accumulatorUpdates
+              .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
+              map(_.value.toLong).sum).sum / (1024 * 1024)
+            println("remote read Msg: " + remoteReadMsg)
             //             println("stages count: " + stages.map(_.shuffleReadBytes).sum / (1024 * 1024))
-            bwshuffle.write(total + "," + remoteRead + "," + stages.map(_.shuffleReadBytes).sum / (1024 * 1024) + "\n")
+            bwshuffle.write(total + "," + remoteRead + "," + remoteReadMsg + "\n")
             bwshuffle.flush()
           }
+
           startime = new Date().getTime
         }
+
         //        logger.info("Completed in time : " + (new Date().getTime - startime))
         println("Completed in time : " + (new Date().getTime - startimeTotal))
+        if (monitorShuffleTime) {
+          val json = fromURL(url).mkString
+          val stages: List[SparkStage] = parse(json).extract[List[SparkStage]]
+            .filter { x =>
+              {
+                if ((x.name.equals("mapPartitions at VertexRDDImpl.scala:245"))
+                  || (x.name.equals("reduce at VertexRDDImpl.scala:88"))
+                  || (x.name.equals("mapPartitions at GraphImpl.scala:207"))
+                  || (x.name.equals("mapPartitions at VertexRDD.scala:356"))
+                  || (x.name.equals("mapPartitions at VertexRDDImpl.scala:249")))
+                  true
+                else
+                  false
+              }
+            }
+          var stageTime = stages.map { x =>
+            var name = ""
+            if (x.name.equals("mapPartitions at VertexRDDImpl.scala:245")) {
+              if (x.details.contains("org.apache.spark.graphx.impl.GraphImpl.mapVertices")) {
+                name = "mapVertices"
+              } else {
+                name = "joinVertices"
+              }
+            } else if (x.name.equals("reduce at VertexRDDImpl.scala:88")) {
+              name = "reduceMsg"
+            } else if (x.name.equals("mapPartitions at VertexRDD.scala:356")) {
+              name = "createGraph"
+            } else if (x.name.equals("mapPartitions at VertexRDDImpl.scala:249")) {
+              name = "shipVertexIds"
+            } else {
+              name = "sendMsg"
+            }
+            (x.stageId, name, GenerateData.stringToDate(x.completionTime).getTime - GenerateData.stringToDate(x.submissionTime).getTime)
+          }
+          val f = new File(folder + outputFile.replace(".csv", "_" + partionStrategy + "_stageDetail.csv"))
+          val bw = new BufferedWriter(new FileWriter(f))
+          var stagefilter = stageTime.filter(_._2.equals("mapVertices"))
+          for (x <- stagefilter) {
+            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
+          }
+          bw.write("\n")
+          bw.write("\n")
+          bw.flush()
+
+          stagefilter = stageTime.filter(_._2.equals("joinVertices"))
+          for (x <- stagefilter) {
+            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
+          }
+          bw.write("\n")
+          bw.write("\n")
+          bw.flush()
+
+          stagefilter = stageTime.filter(_._2.equals("reduceMsg"))
+          for (x <- stagefilter) {
+            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
+          }
+          bw.write("\n")
+          bw.write("\n")
+          bw.flush()
+          stagefilter = stageTime.filter(_._2.equals("createGraph"))
+          for (x <- stagefilter) {
+            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
+          }
+          bw.write("\n")
+          bw.write("\n")
+          bw.flush()
+          stagefilter = stageTime.filter(_._2.equals("shipVertexIds"))
+          for (x <- stagefilter) {
+            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
+          }
+          bw.write("\n")
+          bw.write("\n")
+          bw.flush()
+          stagefilter = stageTime.filter(_._2.equals("sendMsg"))
+          for (x <- stagefilter) {
+            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
+          }
+          bw.flush()
+
+          bw.close()
+
+        }
         for (i <- 0 to numPartitions - 1) {
           println(i + "," + partitionDistribution.get(i).get + "\n")
         }
@@ -508,14 +606,14 @@ object NewTestGraphExact {
     println("Finished exiting")
     System.exit(1)
 
-    def vertexProgram(id: VertexId, value: (NewNodeExact, Boolean), msgSum: (Int, collection.mutable.Set[(Long, Long, Long, Int)])): (NewNodeExact, Boolean) = {
+    def vertexProgram(id: VertexId, value: (NewNodeExact, Boolean), msgSum: (Int, List[(Long, Long, Long, Int)])): (NewNodeExact, Boolean) = {
 
       val stime = new Date().getTime
       var changed = false
       var superstep = msgSum._1
       var summary = value._1.summary
       var updatecnt = value._1.updateCount
-      val filteredmsg = msgSum._2.filter(p => {
+      val filteredmsg = msgSum._2.toSet.filter(p => {
         if (p._1 == value._1.node) {
           true
         } else {
@@ -620,7 +718,7 @@ object NewTestGraphExact {
       }
 
     }
-    def messageCombiner(msg1: (Int, collection.mutable.Set[(Long, Long, Long, Int)]), msg2: (Int, collection.mutable.Set[(Long, Long, Long, Int)])): (Int, collection.mutable.Set[(Long, Long, Long, Int)]) = {
+    def messageCombiner(msg1: (Int, List[(Long, Long, Long, Int)]), msg2: (Int, List[(Long, Long, Long, Int)])): (Int, List[(Long, Long, Long, Int)]) = {
       //    val inspectionset = Set(3460l, 3881l, 3602l, 3761l, 3829l, 3466l, 3915l, 3554l)
       //    if (msg1._1 != msg2._1) {
       //      for (x <- msg1._2) {
@@ -637,45 +735,49 @@ object NewTestGraphExact {
       //      }
       //      //      println(msg1._1)
       //    }
+      mergeMsgProgramCounter.add(1)
       val stime = new Date().getTime
-      val mergedmsg = msg1._2.union(msg2._2)
+      val mergedmsg = msg1._2 ::: msg2._2
       mergeMsgProgramTime.add(new Date().getTime - stime)
       (msg1._1, mergedmsg)
 
     }
 
-    def sendMessage(triplet: EdgeTriplet[(NewNodeExact, Boolean), Long]): Iterator[(VertexId, (Int, collection.mutable.Set[(Long, Long, Long, Int)]))] = {
+    def sendMessage(triplet: EdgeTriplet[(NewNodeExact, Boolean), Long]): Iterator[(VertexId, (Int, List[(Long, Long, Long, Int)]))] = {
       //    val inspectionset = Set(3460l, 3881l, 3602l, 3761l, 3829l, 3466l, 3915l, 3554l)
       //    if (inspectionset.contains(triplet.srcId)) {
       //      //      println(triplet.srcId + "->" + triplet.dstId)
       //    } else if (inspectionset.contains(triplet.dstId)) {
       //      //      println(triplet.srcId + "->" + triplet.dstId)
       //    }
+      
       val stime = new Date().getTime
-      var msg: collection.mutable.Set[(Long, Long, Long, Int)] = null
+      var msg: ListBuffer[(Long, Long, Long, Int)] = ListBuffer[(Long, Long, Long, Int)]()
       if (triplet.srcAttr != null) {
         if (triplet.srcAttr._2) {
           val sum = triplet.srcAttr._1.summary(triplet.srcAttr._1.currentsuperstep)
           if (sum != null) {
+            
             val tempItertator = sum.keysIterator
             while (tempItertator.hasNext) {
               val value = tempItertator.next()
               val time = sum.get(value).get
               if (triplet.dstId != value) {
                 if (msg == null) {
-                  msg = collection.mutable.Set((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr._1.currentsuperstep + 1))
+                  msg.+=((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr._1.currentsuperstep + 1))
                 } else {
-                  msg.add((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr._1.currentsuperstep + 1))
+                  msg.+=((triplet.dstId, value, Math.min(time, triplet.attr), triplet.srcAttr._1.currentsuperstep + 1))
                 }
               }
             }
 
-            if (msg == null) {
+            if (msg.length == 0) {
               sendMsgProgramTime.add(new Date().getTime - stime)
               Iterator.empty
             } else {
+              sendMsgProgramCounter.add(1)
               sendMsgProgramTime.add(new Date().getTime - stime)
-              Iterator((triplet.dstId, (triplet.srcAttr._1.currentsuperstep + 1, msg)))
+              Iterator((triplet.dstId, (triplet.srcAttr._1.currentsuperstep + 1, msg.result())))
             }
           } else {
             sendMsgProgramTime.add(new Date().getTime - stime)
