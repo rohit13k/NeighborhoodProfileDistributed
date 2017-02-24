@@ -9,14 +9,34 @@ import scala.io.Source
 import org.apache.log4j.Logger
 import org.apache.log4j.Level
 import java.util.Date
+import com.ulb.code.wit.util.NodeExact
+import com.ulb.code.wit.util.NewNodeExact
+import java.io.ObjectOutputStream
+import java.io.FileOutputStream
 /**
  * @author Rohit
  */
 object Testing {
   def main(args: Array[String]) {
-    val gd=GenerateData
-    println(gd.stringToDate("2017-01-26T18:36:37.171GMT").getTime)
-    
+    val defaultNode = (new NewNodeExact(-1, new Array[scala.collection.immutable.HashMap[Long, Long]](3)), java.lang.Boolean.FALSE)
+    val temp: collection.immutable.HashMap[Long, Long] = collection.immutable.HashMap(1l -> 1l)
+    defaultNode._1.summary.update(0, temp)
+    defaultNode._1.summary.update(1, temp)
+    defaultNode._1.summary.update(2, temp)
+
+    for (i <- 0 to 200) {
+      defaultNode._1.summary.update(2, defaultNode._1.summary(2).+(i + 0l -> (i + 100l)))
+    }
+        for (i <- 0 to 100) {
+          defaultNode._1.summary.update(1, defaultNode._1.summary(1).+(i + 0l -> (i + 100l)))
+        }
+    //    for (i <- 0 to 109) {
+    //      defaultNode._1.summary.update(0, defaultNode._1.summary(0).+(i + 0l -> (i + 100l)))
+    //    }
+
+    val oos = new ObjectOutputStream(new FileOutputStream("D:\\dataset\\defaultnode.obj"))
+    oos.writeObject(defaultNode)
+    oos.close
     //    testSpark
   }
   def slidingHyperAnf(vertexList: Array[(Long, NodeApprox)], edgeList: Array[(Long, Long, Long)], distance: Int, numberOfBucket: Int): Array[(Long, NodeApprox)] = {

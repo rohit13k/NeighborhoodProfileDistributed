@@ -51,10 +51,12 @@ object PregelTest {
     val vertexList = Array(
       (0.asInstanceOf[VertexId], new HashMap[String, Int]),
       (1.asInstanceOf[VertexId], new HashMap[String, Int]),
-      (2.asInstanceOf[VertexId], new HashMap[String, Int]))
+      (2.asInstanceOf[VertexId], new HashMap[String, Int]),
+      (3.asInstanceOf[VertexId], new HashMap[String, Int]))
     val edgeList = Array(
       Edge(0.asInstanceOf[VertexId], 1.asInstanceOf[VertexId], new HashMap[String, Int]),
-      Edge(1.asInstanceOf[VertexId], 2.asInstanceOf[VertexId], new HashMap[String, Int]))
+      Edge(1.asInstanceOf[VertexId], 2.asInstanceOf[VertexId], new HashMap[String, Int]),
+      Edge(0.asInstanceOf[VertexId], 3.asInstanceOf[VertexId], new HashMap[String, Int]))
 
     val vertexRdd = sc.parallelize(vertexList)
     val edgeRdd = sc.parallelize(edgeList)

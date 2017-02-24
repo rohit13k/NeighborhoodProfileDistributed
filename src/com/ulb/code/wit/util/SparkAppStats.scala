@@ -11,7 +11,7 @@ object SparkAppStats {
    */
   case class SparkStage(stageId:Int,name: String,submissionTime:String,completionTime:String,details: String, shuffleWriteBytes: Long, shuffleReadBytes: Long, memoryBytesSpilled: Long, diskBytesSpilled: Long, accumulatorUpdates: List[Details])
   case class Details(name: String, id: Int, value: String)
-
+  case class SparkJobs(jobId:Int,name:String,submissionTime:String,completionTime:String)
   implicit val formats = DefaultFormats
   var url = "http://localhost:4040/api/v1/applications/local-1485446946983/stages"
 

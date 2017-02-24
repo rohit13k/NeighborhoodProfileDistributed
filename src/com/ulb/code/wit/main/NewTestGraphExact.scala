@@ -34,6 +34,7 @@ import scala.collection.mutable.ListBuffer
 import com.ulb.code.wit.util.LoadStatsCalculator
 import org.apache.spark.util.LongAccumulator
 import scala.collection.immutable.List
+import com.ulb.code.wit.util.SparkAppStats.SparkJobs
 object NewTestGraphExact {
 
   val logger = Logger.getLogger(getClass().getName());
@@ -44,6 +45,7 @@ object NewTestGraphExact {
     var mergeMsgProgramTime: LongAccumulator = null
     var mergeMsgProgramCounter: LongAccumulator = null
     var sendMsgProgramCounter: LongAccumulator = null
+
     try {
       Logger.getLogger("org").setLevel(Level.OFF)
       Logger.getLogger("akka").setLevel(Level.OFF)
@@ -61,7 +63,7 @@ object NewTestGraphExact {
       // conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
 
       if (mode.equals("local")) {
-        conf.setMaster("local[1]")
+        conf.setMaster("local[*]")
       }
 
       val sc = new SparkContext(conf)
@@ -72,6 +74,7 @@ object NewTestGraphExact {
       val batch = Integer.parseInt(prop.getProperty("batch", "1000"))
       var outputFile = prop.getProperty("outputFile", "facebook_reduced_estimate.csv")
       val distance = Integer.parseInt(prop.getProperty("distance", "3"))
+      var jobId = ""
       if (args.length > 2) {
         //override the application properties parameter with command line parameters
         inputfile = args(2)
@@ -80,19 +83,25 @@ object NewTestGraphExact {
         outputFile = inputfile.replace(".csv", "_estimate") + "_" + distance + ".csv"
 
       }
+      if (args.length == 5) jobId = args(4) else jobId = new Date().getTime + ""
       val folder = prop.getProperty("folder", "./data/")
+      val ofolder = folder + jobId + File.separator
+      val oFolderPath = new File(ofolder)
+      if (!oFolderPath.exists())
+        oFolderPath.mkdir()
       val tmpfolder = prop.getProperty("tmpfolder", "")
       val num_buckets = Integer.parseInt(prop.getProperty("number_of_bucket", "256"))
 
       val storage = Boolean.parseBoolean((prop.getProperty("storage", "false")))
-
+      val vertexPartition = Boolean.parseBoolean((prop.getProperty("useVertexPartitioner", "false")))
       val writeResult = Boolean.parseBoolean((prop.getProperty("writeResult", "false")))
       val getReplicationFactor = Boolean.parseBoolean((prop.getProperty("getReplicationFactor", "false")))
 
       val hdrfLambda = (prop.getProperty("hdrfLambda", "1")).toDouble
-      val ftime = new File(folder + "Time_" + inputfile.replace(".csv", "") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
+      val ftime = new File(ofolder + "Time_" + inputfile.replace(".csv", "") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
       val bwtime = new BufferedWriter(new FileWriter(ftime))
       var mypartitioner = new MyPartitionStrategy()
+      var myVertexPartitioner = new VertexPartitioner(numPartitions)
       val globalstats = new GlobalStats(numPartitions, hdrfLambda)
       var bwshuffle: BufferedWriter = null
       if (!tmpfolder.equals(""))
@@ -119,7 +128,7 @@ object NewTestGraphExact {
         var nodes = collection.mutable.Set[Long]()
         var oldnodesAttribute: Map[VertexId, NewNodeExact] = Map[Long, NewNodeExact]()
         val nodeneighbours = collection.mutable.Map[Long, collection.mutable.Set[Long]]()
-        val indegree = collection.mutable.Map[Long, collection.mutable.Set[Long]]()
+        val degree = collection.mutable.Map[Long, collection.mutable.Set[Long]]()
         //  var allnodes = collection.mutable.Map[Long, Int]()
         var nodeReplicationCnt = collection.mutable.Map[Long, collection.mutable.Set[Int]]()
         //        var msgs: collection.mutable.Set[(Long, Long, Long, Int)] = collection.mutable.Set[(Long, Long, Long, Int)]()
@@ -136,34 +145,54 @@ object NewTestGraphExact {
         vertexProgramTime = sc.longAccumulator("vertexProgramTime")
         sendMsgProgramTime = sc.longAccumulator("sendMsgProgramTime")
         mergeMsgProgramTime = sc.longAccumulator("mergeMsgTime")
-        mergeMsgProgramCounter=sc.longAccumulator("mergeMsgCnt")
-        sendMsgProgramCounter=sc.longAccumulator("sendMsgCnt")
+        mergeMsgProgramCounter = sc.longAccumulator("mergeMsgCnt")
+        sendMsgProgramCounter = sc.longAccumulator("sendMsgCnt")
         //        val edgecount: CollectionAccumulator[String] = sc.collectionAccumulator("EdgeCount")
         if (args.length > 1) {
           monitorShuffleData = true
           masterURL = args(1)
 
-          val fshuffle = new File(folder + "Memory_" + inputfile.replace(".csv", "") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
+          val fshuffle = new File(ofolder + "Memory_" + inputfile.replace(".csv", "") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
           bwshuffle = new BufferedWriter(new FileWriter(fshuffle))
         }
         val url = s"""http://$masterURL:4040/api/v1/applications/$appid/stages"""
         println(url)
         implicit val formats = DefaultFormats
-
+        var srcV = 0L
+        var dstV = 0L
+        var vpTime = 0l
+        var svpTime = 0l
+        var totalvpTime = 0l
         //   var degree = sc.broadcast(allnodes)
         for (line <- Source.fromFile(folder + inputfile).getLines()) {
+
           val tmp = line.split(",")
+          srcV = tmp(0).toLong
+          dstV = tmp(1).toLong
 
           count = count + 1
           total = total + 1
-          if (tmp(0).toLong != tmp(1).toLong) { //avoid self loop
-            if (tmp(0).toLong > tmp(1).toLong)
-              edges.put((tmp(0).toLong, tmp(1).toLong), tmp(2).toLong)
+          if (srcV != dstV) { //avoid self loop
+            if (srcV > dstV)
+              edges.put((srcV, dstV), tmp(2).toLong)
             else
-              edges.put((tmp(1).toLong, tmp(0).toLong), tmp(2).toLong)
-            nodes.add(tmp(0).toLong)
-            nodes.add(tmp(1).toLong)
-
+              edges.put((dstV, srcV), tmp(2).toLong)
+            nodes.add(srcV)
+            nodes.add(dstV)
+            var temp = degree.getOrElse(srcV, collection.mutable.Set[Long]())
+            temp.add(dstV)
+            degree.put(srcV, temp)
+            temp = degree.getOrElse(dstV, collection.mutable.Set[Long]())
+            temp.add(srcV)
+            degree.put(dstV, temp)
+            if (vertexPartition) {
+              svpTime = new Date().getTime
+              myVertexPartitioner.indegree = degree.map(f => (f._1, f._2.size))
+              myVertexPartitioner.partitionVertex(srcV)
+              myVertexPartitioner.partitionVertex(dstV)
+              vpTime = vpTime + (new Date().getTime - svpTime)
+              totalvpTime = totalvpTime + vpTime
+            }
             //            nodeactivity.put(tmp(0).toLong, nodeactivity.getOrElse(tmp(0).toLong, 0) + 1)
             //            nodeactivity.put(tmp(1).toLong, nodeactivity.getOrElse(tmp(1).toLong, 0) + 1)
           }
@@ -173,7 +202,12 @@ object NewTestGraphExact {
             //              println("total edges: " + count)
             //            }
             println("distinct edges: " + edges.size)
+
             process
+            if (vertexPartition) {
+              println("vertexPartition time : " + vpTime)
+              vpTime = 0
+            }
             count = 0
           } //end of if
         } // end of for loop
@@ -241,7 +275,10 @@ object NewTestGraphExact {
           val defaultNode = (new NewNodeExact(-1, new Array[scala.collection.immutable.HashMap[Long, Long]](distance)), java.lang.Boolean.FALSE)
           if (isFirst) {
 
-            users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(new HashPartitioner(numPartitions)).setName("User RDD").cache()
+            if (vertexPartition)
+              users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(myVertexPartitioner.fromString("degree", numPartitions)).setName("User RDD").cache()
+            else
+              users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(new HashPartitioner(numPartitions)).setName("User RDD").cache()
 
             relationships = sc.parallelize(inputEdgeArray.result(), numPartitions).cache().setName("Relationship RDD").cache()
 
@@ -268,7 +305,10 @@ object NewTestGraphExact {
             }).partitionBy(new HashPartitioner(numPartitions)).cache()
 
             val oldusers = graph.vertices
-            users = oldusers.union(newusers).setName("updated Users RDD").partitionBy(new HashPartitioner(numPartitions)).cache()
+            if (vertexPartition)
+              users = oldusers.union(newusers).setName("updated Users RDD").partitionBy(myVertexPartitioner.fromString("degree", numPartitions)).cache()
+            else
+              users = oldusers.union(newusers).setName("updated Users RDD").partitionBy(new HashPartitioner(numPartitions)).cache()
             users.count() //materialize the new users
             val newrelationships: RDD[Edge[Long]] = sc.parallelize(inputEdgeArray.result(), numPartitions)
 
@@ -310,7 +350,7 @@ object NewTestGraphExact {
                 temp = nodeneighbours.getOrElse(dst, collection.mutable.Set[Long]())
                 temp.add(src)
                 nodeneighbours.put(dst, temp)
-                indegree.put(dst, temp)
+
                 if (partionStrategy.equals("HDRF")) {
                   globalstats.nodedegree.put(src, nodeneighbours.getOrElse(src, collection.mutable.Set[Long]()).size)
                   globalstats.nodedegree.put(dst, nodeneighbours.getOrElse(dst, collection.mutable.Set[Long]()).size)
@@ -340,7 +380,7 @@ object NewTestGraphExact {
             //            mypartitioner = new MyPartitionStrategy(activity.value)
           } else if (partionStrategy.equals("iDBH")) {
 
-            val idegree = sc.broadcast(indegree.map(f => (f._1, f._2.size)))
+            val idegree = sc.broadcast(degree.map(f => (f._1, f._2.size)))
             mypartitioner = new MyPartitionStrategy(idegree.value)
             //          } else if (partionStrategy.equals("ABH")) {
             //            val activity = sc.broadcast(nodeactivity)
@@ -442,9 +482,30 @@ object NewTestGraphExact {
           relationships.unpersist(blocking = false)
           //            logger.info("Done: " + total + " at : " + new Date())
           val rf: Double = BigDecimal(replication.value.toDouble / nodeneighbours.size).setScale(2, BigDecimal.RoundingMode.HALF_UP).toDouble
-          println("Done: " + total + " at : " + new Date() + " RF: " + rf + " lrsd " + relativeSD + "," + vertexProgramTime.value + "," + sendMsgProgramTime.value + "," + mergeMsgProgramTime.value+ ","+mergeMsgProgramCounter.value+","+sendMsgProgramCounter.value )
-
-          bwtime.write(total + "," + (new Date().getTime - startime) + "," + rf + "," + relativeSD + "," + vertexProgramTime.value + "," + sendMsgProgramTime.value + "," + mergeMsgProgramTime.value + ","+mergeMsgProgramCounter.value+"\n")
+          println("Done: " + total + " at : " + new Date() + " RF: " + rf + " lrsd " + relativeSD + "," + vertexProgramTime.value + "," + sendMsgProgramTime.value + "," + mergeMsgProgramTime.value + "," + mergeMsgProgramCounter.value + "," + sendMsgProgramCounter.value)
+          if (total == batch) {
+            //first batch add header
+            bwtime.write("Batch" + ","
+              + "Batch Time" + ","
+              + "Replication Factor" + ","
+              + "Relative SD" + ","
+              + "VertexProg Time" + ","
+              + "SendMsg Time" + ","
+              + "MergeMsg Time" + ","
+              + "mergeMsg Counter" + ","
+              + (if (vertexPartition) "VP Time" else "")
+              + "\n")
+          }
+          bwtime.write(total + ","
+            + (new Date().getTime - startime) + ","
+            + rf + ","
+            + relativeSD + ","
+            + vertexProgramTime.value + ","
+            + sendMsgProgramTime.value + ","
+            + mergeMsgProgramTime.value + ","
+            + mergeMsgProgramCounter.value + ","
+            + (if (vertexPartition) vpTime else "")
+            + "\n")
           bwtime.flush()
           replication.reset()
           vertexProgramTime.reset()
@@ -453,27 +514,37 @@ object NewTestGraphExact {
           mergeMsgProgramCounter.reset()
           sendMsgProgramCounter.reset()
           if (monitorShuffleData) {
-            val json = fromURL(url).mkString
-            val stages: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("mapPartitions at GraphImpl.scala:207") }
-            val remoteRead = stages.map(_.accumulatorUpdates
-              .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
-              map(_.value.toLong).sum).sum / (1024 * 1024)
-            println("remote read: " + remoteRead)
-            val stagesReduce: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("reduce at VertexRDDImpl.scala:88") }
-            val remoteReadMsg = stagesReduce.map(_.accumulatorUpdates
-              .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
-              map(_.value.toLong).sum).sum / (1024 * 1024)
-            println("remote read Msg: " + remoteReadMsg)
-            //             println("stages count: " + stages.map(_.shuffleReadBytes).sum / (1024 * 1024))
-            bwshuffle.write(total + "," + remoteRead + "," + remoteReadMsg + "\n")
-            bwshuffle.flush()
+            try {
+              val json = fromURL(url).mkString
+              val stages: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("mapPartitions at GraphImpl.scala:207") }
+              val remoteRead = stages.map(_.accumulatorUpdates
+                .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
+                map(_.value.toLong).sum).sum / (1024 * 1024)
+              println("remote read: " + remoteRead)
+              val stagesReduce: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("reduce at VertexRDDImpl.scala:88") }
+              val remoteReadMsg = stagesReduce.map(_.accumulatorUpdates
+                .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
+                map(_.value.toLong).sum).sum / (1024 * 1024)
+              println("remote read Msg: " + remoteReadMsg)
+              //             println("stages count: " + stages.map(_.shuffleReadBytes).sum / (1024 * 1024))
+              bwshuffle.write(total + "," + remoteRead + "," + remoteReadMsg + "\n")
+              bwshuffle.flush()
+            } catch {
+
+              case e: Exception => {
+                println("Error in reading the url:" + url)
+                println(e.getMessage)
+              }
+            }
           }
 
           startime = new Date().getTime
         }
 
         //        logger.info("Completed in time : " + (new Date().getTime - startime))
-        println("Completed in time : " + (new Date().getTime - startimeTotal))
+        println("Total Completed in time : " + (new Date().getTime - startimeTotal))
+
+        println("Total vertex Partitioning time: " + totalvpTime)
         if (monitorShuffleTime) {
           val json = fromURL(url).mkString
           val stages: List[SparkStage] = parse(json).extract[List[SparkStage]]
@@ -508,7 +579,7 @@ object NewTestGraphExact {
             }
             (x.stageId, name, GenerateData.stringToDate(x.completionTime).getTime - GenerateData.stringToDate(x.submissionTime).getTime)
           }
-          val f = new File(folder + outputFile.replace(".csv", "_" + partionStrategy + "_stageDetail.csv"))
+          val f = new File(ofolder + outputFile.replace(".csv", "_" + partionStrategy + "_stageDetail.csv"))
           val bw = new BufferedWriter(new FileWriter(f))
           var stagefilter = stageTime.filter(_._2.equals("mapVertices"))
           for (x <- stagefilter) {
@@ -555,6 +626,19 @@ object NewTestGraphExact {
 
           bw.close()
 
+          //writing job details
+          val jobjson = fromURL(url.replace("stages", "jobs")).mkString
+          val jobs: List[SparkJobs] = parse(jobjson).extract[List[SparkJobs]]
+          var jobTime = jobs.map { x =>
+
+            (x.jobId, x.name, GenerateData.stringToDate(x.completionTime).getTime - GenerateData.stringToDate(x.submissionTime).getTime, x.completionTime, x.submissionTime)
+          }
+          val fjob = new File(ofolder + outputFile.replace(".csv", "_" + partionStrategy + "_jobDetail.csv"))
+          val bwjob = new BufferedWriter(new FileWriter(fjob))
+          for (x <- jobTime) {
+            bwjob.write(x._1 + "," + x._2 + "," + x._3 + "," + x._4 + "," + x._5 + "\n")
+          }
+          bwjob.close()
         }
         for (i <- 0 to numPartitions - 1) {
           println(i + "," + partitionDistribution.get(i).get + "\n")
@@ -575,7 +659,7 @@ object NewTestGraphExact {
               }
             }
           }
-          val f = new File(folder + outputFile)
+          val f = new File(ofolder + outputFile)
           val bw = new BufferedWriter(new FileWriter(f))
           bw.write(output.toString())
           bw.close()
@@ -750,14 +834,14 @@ object NewTestGraphExact {
       //    } else if (inspectionset.contains(triplet.dstId)) {
       //      //      println(triplet.srcId + "->" + triplet.dstId)
       //    }
-      
+
       val stime = new Date().getTime
       var msg: ListBuffer[(Long, Long, Long, Int)] = ListBuffer[(Long, Long, Long, Int)]()
       if (triplet.srcAttr != null) {
         if (triplet.srcAttr._2) {
           val sum = triplet.srcAttr._1.summary(triplet.srcAttr._1.currentsuperstep)
           if (sum != null) {
-            
+
             val tempItertator = sum.keysIterator
             while (tempItertator.hasNext) {
               val value = tempItertator.next()

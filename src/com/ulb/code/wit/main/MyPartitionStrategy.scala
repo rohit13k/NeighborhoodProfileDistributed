@@ -24,7 +24,7 @@ class MyPartitionStrategy(val partitionlookup: collection.mutable.Map[(Long, Lon
   }
   case object DBH extends PartitionStrategy {
     override def getPartition(src: VertexId, dst: VertexId, numParts: PartitionID): PartitionID = {
-
+      
       val srcDegree = nodedegree.getOrElse(src, 0)
       val dstDegree = nodedegree.getOrElse(dst, 0)
       if (srcDegree < dstDegree) {
