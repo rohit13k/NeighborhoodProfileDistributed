@@ -6,6 +6,7 @@ import org.apache.spark.graphx.EdgeDirection
 import org.apache.spark._
 import org.apache.spark.graphx._
 import org.apache.spark.graphx.lib._
+
 object NewPregel {
 
   def apply[VD: ClassTag, ED: ClassTag, A: ClassTag](graph: Graph[VD, ED],
@@ -35,6 +36,7 @@ object NewPregel {
       //   g.vertices.count()
       var messages = g.aggregateMessages(sendMsg, mergeMsg)
       var activeMessages = messages.count()
+     
       // Loop
       var prevG: Graph[VD, ED] = null
       var i = 0
@@ -43,7 +45,7 @@ object NewPregel {
         //        println("Pregel started iteration " + i)
         prevG = g
         //new line added to force the replication of triplets with new vertex attribute
-          g = Graph(g.vertices, g.edges)
+        g = Graph(g.vertices, g.edges)
 
         g = g.joinVertices(messages)(vprog).cache()
 
@@ -51,15 +53,15 @@ object NewPregel {
         // Send new messages, skipping edges where neither side received a message. We must cache
         // messages so it can be materialized on the next line, allowing us to uncache the previous
         // iteration.
-        
-        messages = g.aggregateMessages(sendMsg, mergeMsg, TripletFields.All).cache()
+
+        messages = g.aggregateMessages(sendMsg, mergeMsg, TripletFields.All).cache().setName("messageRDD")
         // The call to count() materializes `messages` and the vertices of `g`. This hides oldMessages
         // (depended on by the vertices of g) and the vertices of prevG (depended on by oldMessages
         // and the vertices of g)
         //        println("aggregate msg done");
-        
+
         activeMessages = messages.count()
-         
+
         //        println("PregeCl finished iteration " + i)
 
         // Unpersist the RDDs hidden by newly-materialized RDDs

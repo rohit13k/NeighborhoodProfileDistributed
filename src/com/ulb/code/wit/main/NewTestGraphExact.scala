@@ -43,9 +43,7 @@ object NewTestGraphExact {
     var vertexProgramTime: LongAccumulator = null
     var sendMsgProgramTime: LongAccumulator = null
     var mergeMsgProgramTime: LongAccumulator = null
-    var mergeMsgProgramCounter: LongAccumulator = null
-    var sendMsgProgramCounter: LongAccumulator = null
-
+   
     try {
       Logger.getLogger("org").setLevel(Level.OFF)
       Logger.getLogger("akka").setLevel(Level.OFF)
@@ -145,8 +143,14 @@ object NewTestGraphExact {
         vertexProgramTime = sc.longAccumulator("vertexProgramTime")
         sendMsgProgramTime = sc.longAccumulator("sendMsgProgramTime")
         mergeMsgProgramTime = sc.longAccumulator("mergeMsgTime")
-        mergeMsgProgramCounter = sc.longAccumulator("mergeMsgCnt")
-        sendMsgProgramCounter = sc.longAccumulator("sendMsgCnt")
+       val vertexProgramCounter = new MyAccumulator
+
+        val mergeMsgProgramCounter = new MyAccumulator
+        val sendMsgProgramCounter = new MyAccumulator
+        // Then, register it into spark context:
+        sc.register(vertexProgramCounter, "vertexProgramCounter")
+        sc.register(mergeMsgProgramCounter, "mergeMsgProgramCounter")
+        sc.register(sendMsgProgramCounter, "sendMsgProgramCounter")
         //        val edgecount: CollectionAccumulator[String] = sc.collectionAccumulator("EdgeCount")
         if (args.length > 1) {
           monitorShuffleData = true
@@ -465,7 +469,7 @@ object NewTestGraphExact {
           }
           //          println("vertex partitioner: " + graph.vertices.partitioner.get)
           //                              graph = Pregel(graph, (0, msgs.result()), itteration, EdgeDirection.Either)(vertexProgram, sendMessage, messageCombiner)
-          graph = Pregel(graph, (0, msgsList.result()), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)
+          graph = PregelMon(graph, (0, msgsList.result()), itteration, EdgeDirection.Out)(vertexProgram, sendMessage, messageCombiner)(vertexProgramCounter: MyAccumulator, sendMsgProgramCounter: MyAccumulator, mergeMsgProgramCounter: MyAccumulator)
           graph.vertices.cache()
           graph.edges.cache()
           graph.cache()
@@ -516,8 +520,8 @@ object NewTestGraphExact {
           if (monitorShuffleData) {
             try {
               val json = fromURL(url).mkString
-              val stages: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("mapPartitions at GraphImpl.scala:207") }
-              val remoteRead = stages.map(_.accumulatorUpdates
+              val stagesMap: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("mapPartitions at GraphImpl.scala:207") }
+              val remoteRead = stagesMap.map(_.accumulatorUpdates
                 .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
                 map(_.value.toLong).sum).sum / (1024 * 1024)
               println("remote read: " + remoteRead)
@@ -664,33 +668,8 @@ object NewTestGraphExact {
           bw.write(output.toString())
           bw.close()
         }
-      } catch {
-        case e: Exception => {
-          //        logger.error(e)
-          e.printStackTrace()
-        }
-
-      } finally {
-
-        bwtime.flush()
-        bwtime.close()
-        if (bwshuffle != null) {
-          bwshuffle.flush()
-          bwshuffle.close()
-        }
-        // sc.stop()
-      }
-    } catch {
-      case e: Exception => {
-        //        logger.error(e)
-        e.printStackTrace()
-      }
-
-    }
-    println("Finished exiting")
-    System.exit(1)
-
-    def vertexProgram(id: VertexId, value: (NewNodeExact, Boolean), msgSum: (Int, List[(Long, Long, Long, Int)])): (NewNodeExact, Boolean) = {
+        
+         def vertexProgram(id: VertexId, value: (NewNodeExact, Boolean), msgSum: (Int, List[(Long, Long, Long, Int)])): (NewNodeExact, Boolean) = {
 
       val stime = new Date().getTime
       var changed = false
@@ -793,6 +772,7 @@ object NewTestGraphExact {
           }
         }
       }
+      vertexProgramCounter.add(1)
       vertexProgramTime.add(new Date().getTime - stime)
       if (changed) {
         updatecnt = updatecnt + 1
@@ -877,6 +857,34 @@ object NewTestGraphExact {
       }
 
     }
+        
+      } catch {
+        case e: Exception => {
+          //        logger.error(e)
+          e.printStackTrace()
+        }
+
+      } finally {
+
+        bwtime.flush()
+        bwtime.close()
+        if (bwshuffle != null) {
+          bwshuffle.flush()
+          bwshuffle.close()
+        }
+        // sc.stop()
+      }
+    } catch {
+      case e: Exception => {
+        //        logger.error(e)
+        e.printStackTrace()
+      }
+
+    }
+    println("Finished exiting")
+    System.exit(1)
+
+   
     def getUBHPartition(src: Long, dst: Long, numParts: Int, nodedegree: collection.mutable.Map[Long, Int], nodeUpdate: scala.collection.immutable.Map[Long, Int], nodeReplication: scala.collection.Map[Long, Int]): (Long, Int) = {
       val srcUpdateCount = nodeUpdate.getOrElse(src, 0)
       val dstUpdateCount = nodeUpdate.getOrElse(dst, 0)
