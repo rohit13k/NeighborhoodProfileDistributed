@@ -7,14 +7,13 @@ import org.apache.log4j.Logger
 import org.apache.log4j.Level
 import scala.collection.immutable.HashMap
 
-
 object PregelTest {
   val logger = Logger.getLogger(getClass().getName());
   def run(graph: Graph[HashMap[String, Int], HashMap[String, Int]]): Graph[HashMap[String, Int], HashMap[String, Int]] = {
 
     def vProg(v: VertexId, attr: HashMap[String, Int], msg: Integer): HashMap[String, Int] = {
       var updatedAttr = attr
-      
+
       if (msg < 0) {
         // init message received 
         if (v.equals(0.asInstanceOf[VertexId])) updatedAttr = attr.+("LENGTH" -> 0)
@@ -42,28 +41,34 @@ object PregelTest {
   def main(args: Array[String]): Unit = {
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
-    val conf = new SparkConf().setAppName("Pregel Test")
+    val conf = new SparkConf().setAppName("Sample Test")
     conf.set("spark.master", "local")
     val sc = new SparkContext(conf)
-    val test = new HashMap[String, Int]
-
-    // create a simplest test graph with 3 nodes and 2 edges 
-    val vertexList = Array(
-      (0.asInstanceOf[VertexId], new HashMap[String, Int]),
-      (1.asInstanceOf[VertexId], new HashMap[String, Int]),
-      (2.asInstanceOf[VertexId], new HashMap[String, Int]),
-      (3.asInstanceOf[VertexId], new HashMap[String, Int]))
-    val edgeList = Array(
-      Edge(0.asInstanceOf[VertexId], 1.asInstanceOf[VertexId], new HashMap[String, Int]),
-      Edge(1.asInstanceOf[VertexId], 2.asInstanceOf[VertexId], new HashMap[String, Int]),
-      Edge(0.asInstanceOf[VertexId], 3.asInstanceOf[VertexId], new HashMap[String, Int]))
-
-    val vertexRdd = sc.parallelize(vertexList)
-    val edgeRdd = sc.parallelize(edgeList)
-    val g = Graph[HashMap[String, Int], HashMap[String, Int]](vertexRdd, edgeRdd)
-
-    // run test code 
-    val lpa = run(g)
-    lpa.vertices.collect().map(println)
+    val input = sc.parallelize(List(1, 2, 3, 4))
+    val result = input.map(x => x * x).cache()
+    println(result.collect().mkString(","))
+    val key=result.map { x => (x,1) }.cache()
+    key.groupByKey.collect()
+    println("wait")
+    //    val test = new HashMap[String, Int]
+    //
+    //    // create a simplest test graph with 3 nodes and 2 edges 
+    //    val vertexList = Array(
+    //      (0.asInstanceOf[VertexId], new HashMap[String, Int]),
+    //      (1.asInstanceOf[VertexId], new HashMap[String, Int]),
+    //      (2.asInstanceOf[VertexId], new HashMap[String, Int]),
+    //      (3.asInstanceOf[VertexId], new HashMap[String, Int]))
+    //    val edgeList = Array(
+    //      Edge(0.asInstanceOf[VertexId], 1.asInstanceOf[VertexId], new HashMap[String, Int]),
+    //      Edge(1.asInstanceOf[VertexId], 2.asInstanceOf[VertexId], new HashMap[String, Int]),
+    //      Edge(0.asInstanceOf[VertexId], 3.asInstanceOf[VertexId], new HashMap[String, Int]))
+    //
+    //    val vertexRdd = sc.parallelize(vertexList)
+    //    val edgeRdd = sc.parallelize(edgeList)
+    //    val g = Graph[HashMap[String, Int], HashMap[String, Int]](vertexRdd, edgeRdd)
+    //
+    //    // run test code 
+    //    val lpa = run(g)
+    //    lpa.vertices.collect().map(println)
   }
 } 

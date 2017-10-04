@@ -43,464 +43,13 @@ import org.apache.spark.scheduler.SparkListenerStageSubmitted
 import org.apache.spark.scheduler.SparkListenerTaskEnd
 import com.ulb.code.wit.util.SparkAppStats.taskDetail
 import org.apache.spark.graphx._
+import com.ulb.code.wit.util.Wait
 
 /**
  * Computes shortest paths to the given set of landmark vertices, returning a graph where each
  * vertex attribute is a map containing the shortest-path distance to each reachable landmark.
  */
-object ShortestPaths {
-
-  val logger = Logger.getLogger(getClass().getName());
-  
-  def main(args: Array[String]) {
-    val prop = new Properties()
-
-    try {
-      Logger.getLogger("org").setLevel(Level.OFF)
-      Logger.getLogger("akka").setLevel(Level.OFF)
-      val configFile = args(0)
-      prop.load(new FileInputStream(configFile))
-
-      //      logger.info("Test Started")
-      println("Test Started" + new Date())
-
-      val mode = prop.getProperty("mode", "cluster")
-      val conf = new SparkConf().setAppName("ConnectedComponent")
-      conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      conf.registerKryoClasses(Array(classOf[VertexPartitioner], classOf[MyPartitionStrategy]))
-
-      // conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
-
-      if (mode.equals("local")) {
-        conf.setMaster("local[*]")
-      }
-      var jobId = ""
-      val sc = new SparkContext(conf)
-      println("spark contest status: " + sc.isStopped)
-      val numPartitions = Integer.parseInt(prop.getProperty("partition", "6"))
-      var inputfile = prop.getProperty("inputfile", "facebook_reduced.csv")
-      var partionStrategy = prop.getProperty("partionStrategy", "")
-      val batch = Integer.parseInt(prop.getProperty("batch", "1000"))
-      var outputFile = "CC_" + prop.getProperty("outputFile", "facebook_reduced_estimate.csv")
-      val distance = Integer.parseInt(prop.getProperty("distance", "3"))
-      val mergeProgDelay = Integer.parseInt(prop.getProperty("mergeProgDelay", "0"))
-      val sendProgDelay = Integer.parseInt(prop.getProperty("sendProgDelay", "0"))
-      val vertexProgDelay = Integer.parseInt(prop.getProperty("vertexProgDelay", "0"))
-      if (args.length > 2) {
-        //override the application properties parameter with command line parameters
-        inputfile = args(2)
-        partionStrategy = args(3)
-
-        outputFile = "CC_" + inputfile.replace(".csv", "_estimate") + "_" + distance + ".csv"
-
-      }
-      if (args.length == 5) jobId = args(4) else jobId = new Date().getTime + ""
-      val folder = prop.getProperty("folder", "./data/")
-      val ofolder = folder + jobId + File.separator
-      val oFolderPath = new File(ofolder)
-      if (!oFolderPath.exists())
-        oFolderPath.mkdir()
-      val tmpfolder = prop.getProperty("tmpfolder", "")
-
-      val storage = Boolean.parseBoolean((prop.getProperty("storage", "false")))
-      val makeObjectHeavy = Boolean.parseBoolean((prop.getProperty("makeObjectHeavy", "false")))
-      val vertexPartition = Boolean.parseBoolean((prop.getProperty("useVertexPartitioner", "false")))
-      val writeResult = Boolean.parseBoolean((prop.getProperty("writeResult", "false")))
-      val getReplicationFactor = Boolean.parseBoolean((prop.getProperty("getReplicationFactor", "false")))
-
-      val hdrfLambda = (prop.getProperty("hdrfLambda", "1")).toDouble
-      val ftime = new File(ofolder + "CC_Time_" + inputfile.replace(".csv", "") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
-      val bwtime = new BufferedWriter(new FileWriter(ftime))
-      val fCounter = new File(ofolder + "CC_" + outputFile.replace(".csv", "_" + partionStrategy + "_CounterDetail.csv"))
-      val bwCounter = new BufferedWriter(new FileWriter(fCounter))
-      val bwCounterData = new StringBuffer
-      var mypartitioner = new MyPartitionStrategy()
-      var myVertexPartitioner = new VertexPartitioner(numPartitions)
-      val globalstats = new GlobalStats(numPartitions, hdrfLambda)
-      var bwshuffle: BufferedWriter = null
-
-      if (!tmpfolder.equals(""))
-        sc.setCheckpointDir(tmpfolder)
-      try {
-        println("input File:" + inputfile + " partitioner: " + partionStrategy)
-        val itteration = distance - 1
-        var line = ""
-        var output = new StringBuilder
-        var node1 = 0L
-        var node2 = 0L
-        var time = 0L
-        var isFirst = true
-        val heavyString = if (makeObjectHeavy) getData(folder) else ""
-        var graph: Graph[(Long, String), Long] = null
-        var partitionDistribution = collection.mutable.Map[Int, String]()
-        //        var distinctedges = collection.mutable.Set[(Long, Long)]()
-        //        var msgs: collection.mutable.Set[(Long, Long, Long, Int)] = collection.mutable.Set[(Long, Long, Long, Int)]()
-        //        var msgs: List[(Long, Long, Long, Int)] = List[(Long, Long, Long, Int)]()
-        var startime = new Date().getTime
-        var startimeTotal = new Date().getTime
-        val appid = sc.applicationId
-        var monitorShuffleData = false
-        val monitorShuffleTime = true
-        var masterURL = "localhost"
-        var result: Array[(VertexId, Long)] = null
-        val replication = sc.longAccumulator("MyreplicationFactor")
-        val vertexProgramCounter = new MyAccumulator
-
-        val mergeMsgProgramCounter = new MyAccumulator
-        val sendMsgProgramCounter = new MyAccumulator
-        // Then, register it into spark context:
-        sc.register(vertexProgramCounter, "vertexProgramCounter")
-        sc.register(mergeMsgProgramCounter, "mergeMsgProgramCounter")
-        sc.register(sendMsgProgramCounter, "sendMsgProgramCounter")
-        //        val edgecount: CollectionAccumulator[String] = sc.collectionAccumulator("EdgeCount")
-        val url = s"""http://$masterURL:4040/api/v1/applications/$appid/stages"""
-        println(url)
-        implicit val formats = DefaultFormats
-        if (args.length > 1) {
-          monitorShuffleData = true
-          masterURL = args(1)
-
-          val fshuffle = new File(ofolder + "CC_Memory_" + inputfile.replace(".csv", "") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
-          bwshuffle = new BufferedWriter(new FileWriter(fshuffle))
-        }
-        if (monitorShuffleData) {
-          bwCounterData.append("StageId,StageName,vpCounter,sendCounter,mergeCounter,executorRunTime,executorDeserializeTime,jvmGCTime,remoteBytesRead,remoteBlocksFetched,fetchWaitTime,bytesWritten,writeTime,stageTime \n")
-          sc.addSparkListener(new SparkListener() {
-
-            override def onStageCompleted(stageComplted: SparkListenerStageCompleted) {
-              //  if (stageComplted.stageInfo.stageId > 12) {
-              var name = ""
-              if (stageComplted.stageInfo.name.equals("mapPartitions at VertexRDDImpl.scala:245")) {
-                if (stageComplted.stageInfo.details.contains("org.apache.spark.graphx.impl.GraphImpl.mapVertices")) {
-                  name = "mapVertices"
-                } else if (stageComplted.stageInfo.details.contains("org.apache.spark.graphx.GraphOps.joinVertices")) {
-                  name = "joinVertices"
-                } else {
-                  name = "shipVertexAttribute"
-                }
-              } else if (stageComplted.stageInfo.name.equals("reduce at VertexRDDImpl.scala:88")) {
-                name = "reduceMsg"
-              } else if (stageComplted.stageInfo.name.equals("mapPartitions at VertexRDD.scala:356")) {
-                name = "createGraph"
-              } else if (stageComplted.stageInfo.name.equals("mapPartitions at VertexRDDImpl.scala:249")) {
-                name = "shipVertexIds"
-              } else if (stageComplted.stageInfo.name.equals("mapPartitions at GraphImpl.scala:207")) {
-                name = "sendMsg"
-              } else {
-                name = stageComplted.stageInfo.name
-              }
-
-              if (name.equals("sendMsg")) {
-                //GatherSum is finishing
-
-                bwCounterData.append(stageComplted.stageInfo.stageId + ","
-                  + name + ","
-                  + ","
-                  + sendMsgProgramCounter.max + ","
-                  + mergeMsgProgramCounter.max + ",")
-                mergeMsgProgramCounter.reset()
-                writeCommonInfo(stageComplted)
-
-                //                  mergeMsgProgramCounter.reset()
-                //                  sendMsgProgramCounter.reset()
-              } else if (name.equals("mapVertices") || name.equals("joinVertices")) {
-                //Apply is finishing
-
-                bwCounterData.append(stageComplted.stageInfo.stageId + ","
-                  + name + ","
-                  + vertexProgramCounter.max + ","
-                  + ","
-                  + ",")
-                writeCommonInfo(stageComplted)
-
-                //                  vertexProgramCounter.reset()
-              } else if (name.equals("reduceMsg")) {
-                //reduce is finishing
-                bwCounterData.append(stageComplted.stageInfo.stageId + ","
-                  + name + ","
-                  + ","
-                  + ","
-                  + mergeMsgProgramCounter.max + ",")
-                writeCommonInfo(stageComplted)
-
-              } else {
-                bwCounterData.append(stageComplted.stageInfo.stageId + ","
-                  + name + ","
-                  + ","
-                  + ","
-                  + ",")
-                writeCommonInfo(stageComplted)
-
-              }
-
-            }
-            def writeCommonInfo(stageComplted: SparkListenerStageCompleted) {
-              val taskURL = url + "/" + stageComplted.stageInfo.stageId + "/" + stageComplted.stageInfo.attemptId + "/taskList?sortBy=runtime&&length=1"
-
-              val json = fromURL(taskURL).mkString
-              val taskDetails = parse(json).extract[List[taskDetail]].head
-              //              val remoteRead = stages.map(x => (x.stageId, x.name, x.accumulatorUpdates
-              //                .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
-              //                map(_.value.toLong).sum))
-              //              remoteRead.foreach(x => {
-              //                bwshuffle.write(x._1 + "," + x._2 + "," + x._3 + "\n")
-              //              })
-
-              bwCounterData.append(taskDetails.taskMetrics.executorRunTime + ","
-                + taskDetails.taskMetrics.executorDeserializeTime + ","
-                + taskDetails.taskMetrics.jvmGcTime + ","
-                + (if (taskDetails.taskMetrics.shuffleReadMetrics != null) taskDetails.taskMetrics.shuffleReadMetrics.remoteBytesRead else "") + ","
-                + (if (taskDetails.taskMetrics.shuffleReadMetrics != null) taskDetails.taskMetrics.shuffleReadMetrics.remoteBlocksFetched else "") + ","
-                + (if (taskDetails.taskMetrics.shuffleReadMetrics != null) taskDetails.taskMetrics.shuffleReadMetrics.fetchWaitTime else "") + ","
-
-                + (if (taskDetails.taskMetrics.shuffleWriteMetrics != null) taskDetails.taskMetrics.shuffleWriteMetrics.bytesWritten else "") + ","
-                + (if (taskDetails.taskMetrics.shuffleWriteMetrics != null) taskDetails.taskMetrics.shuffleWriteMetrics.writeTime else "") + ","
-
-                + (stageComplted.stageInfo.completionTime.get - stageComplted.stageInfo.submissionTime.get) + "\n")
-            }
-            override def onJobEnd(jobEnd: SparkListenerJobEnd) {
-              //              Thread.sleep(10)
-
-              //              vertexProgramCounter.reset()
-              //              sendMsgProgramCounter.reset()
-              //              mergeMsgProgramCounter.reset()
-              //              bwCounterData.append(jobEnd.time)
-
-            }
-
-            override def onApplicationEnd(append: SparkListenerApplicationEnd) {
-
-            }
-          });
-        }
-
-        if (!partionStrategy.equals(""))
-          graph = graph.partitionBy(mypartitioner.fromString(partionStrategy), numPartitions).groupEdges((a, b) => Math.max(a, b))
-        graph.vertices.setName("gu vertex")
-        graph.edges.setName("gu edges")
-        graph.cache()
-        //          graph.edges.count()
-val edges=sc.textFile(folder + inputfile,numPartitions ).map { x => x.split(",") }.map { x => if(x.length>2) (x(0).toLong,x(1).toLong,x(2).toLong) else (x(0).toLong,x(1).toLong,0l) }
-//G   esult = shortestPath(graph)
-
-        bwCounter.write(bwCounterData.toString())
-        bwCounterData.delete(0, bwCounterData.length());
-        bwCounter.flush()
-
-        graph.vertices.cache()
-        graph.edges.cache()
-        graph.cache()
-
-        vertexProgramCounter.reset()
-        sendMsgProgramCounter.reset()
-        mergeMsgProgramCounter.reset()
-        if (monitorShuffleData) {
-          try {
-            val json = fromURL(url).mkString
-            val stages: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("mapPartitions at GraphImpl.scala:207") }
-            val remoteRead = stages.map(x => (x.stageId, x.name, x.accumulatorUpdates
-              .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
-              map(_.value.toLong).sum))
-            remoteRead.foreach(x => {
-              bwshuffle.write(x._1 + "," + x._2 + "," + x._3 + "\n")
-            })
-            val stagesReduce: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("reduce at VertexRDDImpl.scala:88") }
-            val remoteReadMsg = stagesReduce.map(x => (x.stageId, x.name, x.accumulatorUpdates
-              .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
-              map(_.value.toLong).sum))
-
-            //             println("stages count: " + stages.map(_.shuffleReadBytes).sum / (1024 * 1024))
-            remoteReadMsg.foreach(x => {
-              bwshuffle.write(x._1 + "," + x._2 + "," + x._3 + "\n")
-            })
-
-            bwshuffle.flush()
-          } catch {
-
-            case e: Exception => {
-              println("Error in reading the url:" + url)
-              println(e.getMessage)
-            }
-          }
-        }
-
-        startime = new Date().getTime
-
-        //        logger.info("Completed in time : " + (new Date().getTime - startime))
-        println("Total Completed in time : " + (new Date().getTime - startimeTotal))
-        if (monitorShuffleTime) {
-          val json = fromURL(url).mkString
-          val stages: List[SparkStage] = parse(json).extract[List[SparkStage]]
-            .filter { x =>
-              {
-                if ((x.name.equals("mapPartitions at VertexRDDImpl.scala:245"))
-                  || (x.name.equals("reduce at VertexRDDImpl.scala:88"))
-                  || (x.name.equals("mapPartitions at GraphImpl.scala:207"))
-                  || (x.name.equals("mapPartitions at VertexRDD.scala:356"))
-                  || (x.name.equals("mapPartitions at VertexRDDImpl.scala:249")))
-                  true
-                else
-                  false
-              }
-            }
-          var stageTime = stages.map { x =>
-            var name = ""
-            if (x.name.equals("mapPartitions at VertexRDDImpl.scala:245")) {
-              if (x.details.contains("org.apache.spark.graphx.impl.GraphImpl.mapVertices")) {
-                name = "mapVertices"
-              } else if (x.details.contains("org.apache.spark.graphx.GraphOps.joinVertices")) {
-                name = "joinVertices"
-              } else {
-                name = "shipVertexAttribute"
-              }
-            } else if (x.name.equals("reduce at VertexRDDImpl.scala:88")) {
-              name = "reduceMsg"
-            } else if (x.name.equals("mapPartitions at VertexRDD.scala:356")) {
-              name = "createGraph"
-            } else if (x.name.equals("mapPartitions at VertexRDDImpl.scala:249")) {
-              name = "shipVertexIds"
-            } else if (x.name.equals("mapPartitions at GraphImpl.scala:207")) {
-              name = "sendMsg"
-            } else {
-              name = "unKnown"
-            }
-            (x.stageId, name, GenerateData.stringToDate(x.completionTime).getTime - GenerateData.stringToDate(x.submissionTime).getTime)
-          }
-          val f = new File(ofolder + "CC_" + outputFile.replace(".csv", "_" + partionStrategy + "_stageDetail.csv"))
-          val bw = new BufferedWriter(new FileWriter(f))
-          var stagefilter = stageTime.filter(_._2.equals("mapVertices"))
-          for (x <- stagefilter) {
-            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
-          }
-          bw.write("\n")
-          bw.write("\n")
-          bw.flush()
-
-          stagefilter = stageTime.filter(_._2.equals("joinVertices"))
-          for (x <- stagefilter) {
-            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
-          }
-          bw.write("\n")
-          bw.write("\n")
-          bw.flush()
-          stagefilter = stageTime.filter(_._2.equals("unKnown"))
-          for (x <- stagefilter) {
-            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
-          }
-          bw.write("\n")
-          bw.write("\n")
-          bw.flush()
-          stagefilter = stageTime.filter(_._2.equals("shipVertexAttribute"))
-          for (x <- stagefilter) {
-            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
-          }
-          bw.write("\n")
-          bw.write("\n")
-          bw.flush()
-
-          stagefilter = stageTime.filter(_._2.equals("reduceMsg"))
-          for (x <- stagefilter) {
-            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
-          }
-          bw.write("\n")
-          bw.write("\n")
-          bw.flush()
-          stagefilter = stageTime.filter(_._2.equals("createGraph"))
-          for (x <- stagefilter) {
-            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
-          }
-          bw.write("\n")
-          bw.write("\n")
-          bw.flush()
-          stagefilter = stageTime.filter(_._2.equals("shipVertexIds"))
-          for (x <- stagefilter) {
-            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
-          }
-          bw.write("\n")
-          bw.write("\n")
-          bw.flush()
-          stagefilter = stageTime.filter(_._2.equals("sendMsg"))
-          for (x <- stagefilter) {
-            bw.write(x._1 + "," + x._2 + "," + x._3 + "\n")
-          }
-          bw.flush()
-
-          bw.close()
-
-          //writing job details
-          val jobjson = fromURL(url.replace("stages", "jobs")).mkString
-          val jobs: List[SparkJobs] = parse(jobjson).extract[List[SparkJobs]]
-          var jobTime = jobs.map { x =>
-
-            (x.jobId, x.name, GenerateData.stringToDate(x.completionTime).getTime - GenerateData.stringToDate(x.submissionTime).getTime, x.completionTime, x.submissionTime, x.stageIds.foldRight(",") {
-              (a, b) => a + "," + b
-            })
-
-          }
-          val fjob = new File(ofolder + "CC_" + outputFile.replace(".csv", "_" + partionStrategy + "_jobDetail.csv"))
-          val bwjob = new BufferedWriter(new FileWriter(fjob))
-          for (x <- jobTime) {
-            bwjob.write(x._1 + "," + x._2 + "," + x._3 + "," + x._4 + "," + x._5 + "," + x._6 + "\n")
-          }
-          bwjob.close()
-        }
-        for (i <- 0 to numPartitions - 1) {
-          println(i + "," + partitionDistribution.get(i).get + "\n")
-        }
-        /*
-     * Print the output
-     * 
-     */
-
-        if (writeResult) {
-          result = graph.vertices.mapValues((value, text) => value).collect
-          println("writing result")
-          result.foreach {
-            case (vertexId, pr) => {
-              //        println("node summary for " + value + " : " + original_value.getNodeSummary.estimate())
-              output.append(vertexId + "," + pr + "\n")
-
-            }
-          }
-          val f = new File(ofolder + outputFile)
-          val bw = new BufferedWriter(new FileWriter(f))
-          bw.write(output.toString())
-          bw.close()
-        }
-
-      } catch {
-        case e: Exception => {
-          //        logger.error(e)
-          e.printStackTrace()
-        }
-
-      } finally {
-        bwCounter.flush()
-        bwCounter.close()
-        bwtime.flush()
-        bwtime.close()
-        if (bwshuffle != null) {
-          bwshuffle.flush()
-          bwshuffle.close()
-        }
-        // sc.stop()
-      }
-    } catch {
-      case e: Exception => {
-        //        logger.error(e)
-        e.printStackTrace()
-      }
-
-    }
-    println("Finished exiting")
-    System.exit(1)
-    def getData(path: String): String = {
-      val source = scala.io.Source.fromFile(path + "data.csv")
-      val lines = try source.mkString finally source.close()
-      lines
-    }
-
-  }
+class ShortestPaths(val vertexProgramCounter: MyAccumulator, val sendMsgProgramCounter: MyAccumulator, val mergeMsgProgramCounter: MyAccumulator, val vertexProgDelay: Int, val sendProgDelay: Int, val mergeProgDelay: Int) extends Serializable {
 
   /** Stores a map from the vertex id of a landmark to the distance to that landmark. */
   type SPMap = Map[VertexId, Int]
@@ -515,7 +64,7 @@ val edges=sc.textFile(folder + inputfile,numPartitions ).map { x => x.split(",")
     }.toMap
 
   /**
-   * Computes shortest paths to the given set of landmark vertices.
+   * Computes shortest paths to the given set of landmark vertices. if its less then max ititeration needed
    *
    * @tparam ED the edge attribute type (not used in the computation)
    *
@@ -526,23 +75,63 @@ val edges=sc.textFile(folder + inputfile,numPartitions ).map { x => x.split(",")
    * @return a graph where each vertex attribute is a map containing the shortest-path distance to
    * each reachable landmark vertex.
    */
-  def shortestPath[VD, ED: ClassTag](graph: Graph[VD, ED], landmarks: Seq[VertexId]): Graph[SPMap, ED] = {
+  def shortestPath(graph: Graph[(Long, String), Long], landmarks: Seq[VertexId], PR_Itteration: Int): Graph[SPMap, Long] = {
+    val stime = new Date().getTime
     val spGraph = graph.mapVertices { (vid, attr) =>
       if (landmarks.contains(vid)) makeMap(vid -> 0) else makeMap()
-    }
+    }.cache()
 
     val initialMessage = makeMap()
+    spGraph.vertices.count
+    spGraph.triplets.count
 
-    def vertexProgram(id: VertexId, attr: SPMap, msg: SPMap): SPMap = {
-      addMaps(attr, msg)
-    }
+    val ptime = new Date().getTime
+    val result = PregelMon(spGraph, initialMessage, PR_Itteration, EdgeDirection.Either)(vertexProgram, sendMessage, mergeMsg)(vertexProgramCounter, sendMsgProgramCounter, mergeMsgProgramCounter)
 
-    def sendMessage(edge: EdgeTriplet[SPMap, _]): Iterator[(VertexId, SPMap)] = {
-      val newAttr = incrementMap(edge.dstAttr)
-      if (edge.srcAttr != addMaps(newAttr, edge.srcAttr)) Iterator((edge.srcId, newAttr))
-      else Iterator.empty
-    }
-
-    Pregel(spGraph, initialMessage)(vertexProgram, sendMessage, addMaps)
+    println("SP time: " + (new Date().getTime - stime))
+    println("PR Pregel time:" + (new Date().getTime - ptime))
+    result
   }
+  def vertexProgram(id: VertexId, attr: SPMap, msg: SPMap): SPMap = {
+    if (vertexProgDelay != -1) {
+
+      if (vertexProgDelay == 0) {
+        vertexProgramCounter.add(1)
+      } else {
+        vertexProgramCounter.add(vertexProgDelay)
+        //        Thread.sleep(vertexProgDelay)
+        Wait.waitfor(vertexProgDelay)
+      }
+    }
+    addMaps(attr, msg)
+  }
+
+  def sendMessage(edge: EdgeTriplet[SPMap, _]): Iterator[(VertexId, SPMap)] = {
+    if (sendProgDelay != -1) {
+      if (sendProgDelay == 0) {
+        sendMsgProgramCounter.add(1)
+      } else {
+        sendMsgProgramCounter.add(sendProgDelay)
+        //        Thread.sleep(sendProgDelay)
+        Wait.waitfor(sendProgDelay)
+      }
+    }
+    val newAttr = incrementMap(edge.dstAttr)
+    if (edge.srcAttr != addMaps(newAttr, edge.srcAttr)) Iterator((edge.srcId, newAttr))
+    else Iterator.empty
+  }
+  def mergeMsg(spmap1: SPMap, spmap2: SPMap): SPMap = {
+    if (mergeProgDelay != -1) {
+      if (mergeProgDelay == 0) {
+        mergeMsgProgramCounter.add(1)
+      } else {
+        mergeMsgProgramCounter.add(mergeProgDelay)
+        //        Thread.sleep(mergeProgDelay)
+        Wait.waitfor(mergeProgDelay)
+
+      }
+    }
+    addMaps(spmap1, spmap2)
+  }
+
 }

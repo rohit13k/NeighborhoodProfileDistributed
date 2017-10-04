@@ -11,10 +11,86 @@ import java.io.BufferedWriter
 import java.io.FileWriter
 import java.util.Date
 import org.slf4j.LoggerFactory
+import com.ulb.code.wit.util.Wait
 /**
  * @author Rohit
  */
-class PageRank {
+class PageRank(val vertexProgramCounter: MyAccumulator, val sendMsgProgramCounter: MyAccumulator, val mergeMsgProgramCounter: MyAccumulator, val vertexProgDelay: Int, val sendProgDelay: Int, val mergeProgDelay: Int) extends Serializable {
+  val tol = 0.0001
+  val resetProb: Double = 0.15
+  def pageRank(graph: Graph[(Long, String), Long], PR_Itteration: Int): Array[(VertexId, Double)] = {
+    val stime = new Date().getTime
+    val pagerankGraph: Graph[(Double, Double, String), Double] = graph
+      // Associate the degree with each vertex
+      .outerJoinVertices(graph.outDegrees) {
+        (vid, vdata, deg) => (deg.getOrElse(0), vdata._2)
+      }
+      // Set the weight on the edges based on the degree
+      .mapTriplets(e => 1.0 / e.srcAttr._1)
+      // Set the vertex attributes to (initialPR, delta = 0)
+      .mapVertices { (id, attr) =>
+        if (id == -1) (resetProb, Double.NegativeInfinity, attr._2) else (0.0, 0.0, attr._2)
+      }
+      .cache()
+    val initialMessage = resetProb / (1.0 - resetProb)
+
+    pagerankGraph.vertices.count()
+    pagerankGraph.triplets.count()
+    val ptime = new Date().getTime
+    val node = PregelMon(pagerankGraph, initialMessage,
+      PR_Itteration, EdgeDirection.Out)(
+        vertexProgram,
+        sendMessage,
+        messageCombiner)(vertexProgramCounter, sendMsgProgramCounter, mergeMsgProgramCounter)
+    val result = node.mapVertices { (id, attr) => (id, attr._1) }.vertices.collect().map(x => (x._1, x._2._2))
+
+    println("PR time: " + (new Date().getTime - stime))
+    println("PR Pregel time:" + (new Date().getTime - ptime))
+    result
+  }
+  def vertexProgram(id: VertexId, attr: (Double, Double, String), msgSum: Double): (Double, Double, String) = {
+    if (vertexProgDelay != -1) {
+      if (vertexProgDelay == 0) {
+        vertexProgramCounter.add(1)
+      } else {
+        vertexProgramCounter.add(vertexProgDelay)
+        //        Thread.sleep(vertexProgDelay)
+        Wait.waitfor(vertexProgDelay)
+      }
+    }
+    val (oldPR, lastDelta, data) = attr
+    val newPR = oldPR + (1.0 - resetProb) * msgSum
+    (newPR, newPR - oldPR, attr._3)
+  }
+  def sendMessage(edge: EdgeTriplet[(Double, Double, String), Double]) = {
+    if (sendProgDelay != -1) {
+      if (sendProgDelay == 0) {
+        sendMsgProgramCounter.add(1)
+      } else {
+        sendMsgProgramCounter.add(sendProgDelay)
+        //        Thread.sleep(sendProgDelay)
+        Wait.waitfor(sendProgDelay)
+      }
+    }
+    if (edge.srcAttr._2 > tol) {
+      Iterator((edge.dstId, edge.srcAttr._2 * edge.attr))
+    } else {
+      Iterator.empty
+    }
+  }
+
+  def messageCombiner(a: Double, b: Double): Double = {
+    if (mergeProgDelay != -1) {
+      if (mergeProgDelay == 0) {
+        mergeMsgProgramCounter.add(1)
+      } else {
+        mergeMsgProgramCounter.add(mergeProgDelay)
+        //        Thread.sleep(mergeProgDelay)
+        Wait.waitfor(mergeProgDelay)
+      }
+    }
+    a + b
+  }
 
 }
 object Rank {

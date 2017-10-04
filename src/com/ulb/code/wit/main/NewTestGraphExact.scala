@@ -35,6 +35,12 @@ import com.ulb.code.wit.util.LoadStatsCalculator
 import org.apache.spark.util.LongAccumulator
 import scala.collection.immutable.List
 import com.ulb.code.wit.util.SparkAppStats.SparkJobs
+import org.apache.spark.scheduler.SparkListenerJobEnd
+import org.apache.spark.scheduler.SparkListenerApplicationEnd
+import org.apache.spark.scheduler.SparkListenerStageCompleted
+import com.ulb.code.wit.util.SparkAppStats.taskDetail
+import org.apache.spark.scheduler.SparkListenerStageCompleted
+import org.apache.spark.scheduler.SparkListener
 object NewTestGraphExact {
 
   val logger = Logger.getLogger(getClass().getName());
@@ -98,6 +104,7 @@ object NewTestGraphExact {
       val hdrfLambda = (prop.getProperty("hdrfLambda", "1")).toDouble
       val ftime = new File(ofolder + "Time_" + inputfile.replace(".csv", "") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
       val bwtime = new BufferedWriter(new FileWriter(ftime))
+        val bwCounterData = new StringBuffer
       var mypartitioner = new MyPartitionStrategy()
       var myVertexPartitioner = new VertexPartitioner(numPartitions)
       val globalstats = new GlobalStats(numPartitions, hdrfLambda)
@@ -151,17 +158,143 @@ object NewTestGraphExact {
         sc.register(vertexProgramCounter, "vertexProgramCounter")
         sc.register(mergeMsgProgramCounter, "mergeMsgProgramCounter")
         sc.register(sendMsgProgramCounter, "sendMsgProgramCounter")
+        val url = s"""http://$masterURL:4040/api/v1/applications/$appid/stages"""
+        println(url)
+        implicit val formats = DefaultFormats
         //        val edgecount: CollectionAccumulator[String] = sc.collectionAccumulator("EdgeCount")
         if (args.length > 1) {
           monitorShuffleData = true
           masterURL = args(1)
 
-          val fshuffle = new File(ofolder + "Memory_" + inputfile.replace(".csv", "") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
+         val fshuffle = new File(ofolder + "NPD_Memory_" + inputfile.replace(".csv", "") + "_" + distance + "_" + partionStrategy + "_" + numPartitions + ".csv")
           bwshuffle = new BufferedWriter(new FileWriter(fshuffle))
         }
-        val url = s"""http://$masterURL:4040/api/v1/applications/$appid/stages"""
-        println(url)
-        implicit val formats = DefaultFormats
+         if (monitorShuffleData) {
+          bwCounterData.append("StageId,StageName,vpCounter,sendCounter,mergeCounter,executorRunTime,executorDeserializeTime,jvmGCTime,"
+            + "remoteBytesRead,remoteBlocksFetched,fetchWaitTime,localBlocksFetched,localBytesRead,recordsRead,"
+            + "bytesWritten,writeTime,recordsWritten,"
+            + "inputbytesRead,inputRecordsRead,"
+            + "outputBytesWritten,outputRecordsWritten,"
+            + "stageTime \n")
+          sc.addSparkListener(new SparkListener() {
+
+            override def onStageCompleted(stageComplted: SparkListenerStageCompleted) {
+              //  if (stageComplted.stageInfo.stageId > 12) {
+              var name = ""
+              if (stageComplted.stageInfo.name.equals("mapPartitions at VertexRDDImpl.scala:245")) {
+                if (stageComplted.stageInfo.details.contains("org.apache.spark.graphx.impl.GraphImpl.mapVertices")) {
+                  name = "mapVertices"
+                } else if (stageComplted.stageInfo.details.contains("org.apache.spark.graphx.GraphOps.joinVertices")) {
+                  name = "joinVertices"
+                } else {
+                  name = "shipVertexAttribute"
+                }
+              } else if (stageComplted.stageInfo.name.equals("reduce at VertexRDDImpl.scala:88")) {
+                name = "reduceMsg"
+              } else if (stageComplted.stageInfo.name.equals("mapPartitions at VertexRDD.scala:356")) {
+                name = "createGraph"
+              } else if (stageComplted.stageInfo.name.equals("mapPartitions at VertexRDDImpl.scala:249")) {
+                name = "shipVertexIds"
+              } else if (stageComplted.stageInfo.name.equals("mapPartitions at GraphImpl.scala:207")) {
+                name = "sendMsg"
+              } else {
+                name = stageComplted.stageInfo.name
+              }
+
+              if (name.equals("sendMsg")) {
+                //GatherSum is finishing
+
+                bwCounterData.append(stageComplted.stageInfo.stageId + ","
+                  + name + ","
+                  + ","
+                  + sendMsgProgramCounter.max + ","
+                  + mergeMsgProgramCounter.max + ",")
+                mergeMsgProgramCounter.reset()
+                writeCommonInfo(stageComplted)
+
+                //                  mergeMsgProgramCounter.reset()
+                //                  sendMsgProgramCounter.reset()
+              } else if (name.equals("mapVertices") || name.equals("joinVertices")) {
+                //Apply is finishing
+
+                bwCounterData.append(stageComplted.stageInfo.stageId + ","
+                  + name + ","
+                  + vertexProgramCounter.max + ","
+                  + ","
+                  + ",")
+                writeCommonInfo(stageComplted)
+
+                //                  vertexProgramCounter.reset()
+              } else if (name.equals("reduceMsg")) {
+                //reduce is finishing
+                bwCounterData.append(stageComplted.stageInfo.stageId + ","
+                  + name + ","
+                  + ","
+                  + ","
+                  + mergeMsgProgramCounter.max + ",")
+                writeCommonInfo(stageComplted)
+
+              } else {
+                bwCounterData.append(stageComplted.stageInfo.stageId + ","
+                  + name + ","
+                  + ","
+                  + ","
+                  + ",")
+                writeCommonInfo(stageComplted)
+
+              }
+
+            }
+            def writeCommonInfo(stageComplted: SparkListenerStageCompleted) {
+              val taskURL = url + "/" + stageComplted.stageInfo.stageId + "/" + stageComplted.stageInfo.attemptId + "/taskList?sortBy=-runtime&&length=1"
+
+              val json = fromURL(taskURL).mkString
+              val taskDetails = parse(json).extract[List[taskDetail]].head
+              //              val remoteRead = stages.map(x => (x.stageId, x.name, x.accumulatorUpdates
+              //                .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
+              //                map(_.value.toLong).sum))
+              //              remoteRead.foreach(x => {
+              //                bwshuffle.write(x._1 + "," + x._2 + "," + x._3 + "\n")
+              //              })
+
+              bwCounterData.append(taskDetails.taskMetrics.executorRunTime + ","
+                + taskDetails.taskMetrics.executorDeserializeTime + ","
+                + taskDetails.taskMetrics.jvmGcTime + ","
+                + (if (taskDetails.taskMetrics.shuffleReadMetrics != null) taskDetails.taskMetrics.shuffleReadMetrics.remoteBytesRead else "") + ","
+                + (if (taskDetails.taskMetrics.shuffleReadMetrics != null) taskDetails.taskMetrics.shuffleReadMetrics.remoteBlocksFetched else "") + ","
+                + (if (taskDetails.taskMetrics.shuffleReadMetrics != null) taskDetails.taskMetrics.shuffleReadMetrics.fetchWaitTime else "") + ","
+                + (if (taskDetails.taskMetrics.shuffleReadMetrics != null) taskDetails.taskMetrics.shuffleReadMetrics.localBlocksFetched else "") + ","
+                + (if (taskDetails.taskMetrics.shuffleReadMetrics != null) taskDetails.taskMetrics.shuffleReadMetrics.localBytesRead else "") + ","
+                + (if (taskDetails.taskMetrics.shuffleReadMetrics != null) taskDetails.taskMetrics.shuffleReadMetrics.recordsRead else "") + ","
+
+                + (if (taskDetails.taskMetrics.shuffleWriteMetrics != null) taskDetails.taskMetrics.shuffleWriteMetrics.bytesWritten else "") + ","
+                + (if (taskDetails.taskMetrics.shuffleWriteMetrics != null) taskDetails.taskMetrics.shuffleWriteMetrics.writeTime else "") + ","
+                + (if (taskDetails.taskMetrics.shuffleWriteMetrics != null) taskDetails.taskMetrics.shuffleWriteMetrics.recordsWritten else "") + ","
+
+                + (if (taskDetails.taskMetrics.inputMetrics != null) taskDetails.taskMetrics.inputMetrics.bytesRead else "") + ","
+                + (if (taskDetails.taskMetrics.inputMetrics != null) taskDetails.taskMetrics.inputMetrics.recordsRead else "") + ","
+
+                + (if (taskDetails.taskMetrics.outputMetrics != null) taskDetails.taskMetrics.outputMetrics.bytesWritten else "") + ","
+                + (if (taskDetails.taskMetrics.outputMetrics != null) taskDetails.taskMetrics.outputMetrics.recordsWritten else "") + ","
+
+                + (stageComplted.stageInfo.completionTime.get - stageComplted.stageInfo.submissionTime.get) + "\n")
+            }
+            override def onJobEnd(jobEnd: SparkListenerJobEnd) {
+              //              Thread.sleep(10)
+
+              //              vertexProgramCounter.reset()
+              //              sendMsgProgramCounter.reset()
+              //              mergeMsgProgramCounter.reset()
+              //              bwCounterData.append(jobEnd.time)
+
+            }
+
+            override def onApplicationEnd(append: SparkListenerApplicationEnd) {
+
+            }
+          });
+        }
+     
         var srcV = 0L
         var dstV = 0L
         var vpTime = 0l

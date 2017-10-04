@@ -58,7 +58,7 @@ object ConnectedComponentBatch {
       prop.load(new FileInputStream(configFile))
 
       //      logger.info("Test Started")
-      println("Test Started" + new Date())
+      //      println("Test Started" + new Date())
 
       val mode = prop.getProperty("mode", "cluster")
       val conf = new SparkConf().setAppName("ConnectedComponent")
@@ -72,7 +72,7 @@ object ConnectedComponentBatch {
       }
       var jobId = ""
       val sc = new SparkContext(conf)
-      println("spark contest status: " + sc.isStopped)
+      //      println("spark contest status: " + sc.isStopped)
       val numPartitions = Integer.parseInt(prop.getProperty("partition", "6"))
       var inputfile = prop.getProperty("inputfile", "facebook_reduced.csv")
       var partionStrategy = prop.getProperty("partionStrategy", "")
@@ -165,7 +165,7 @@ object ConnectedComponentBatch {
         sc.register(sendMsgProgramCounter, "sendMsgProgramCounter")
         //        val edgecount: CollectionAccumulator[String] = sc.collectionAccumulator("EdgeCount")
         val url = s"""http://$masterURL:4040/api/v1/applications/$appid/stages"""
-        println(url)
+        //        println(url)
         implicit val formats = DefaultFormats
         if (args.length > 1) {
           monitorShuffleData = true
@@ -291,6 +291,9 @@ object ConnectedComponentBatch {
               //              sendMsgProgramCounter.reset()
               //              mergeMsgProgramCounter.reset()
               //              bwCounterData.append(jobEnd.time)
+              bwCounter.write(bwCounterData.toString())
+              bwCounterData.delete(0, bwCounterData.length());
+              bwCounter.flush()
 
             }
 
@@ -335,10 +338,10 @@ object ConnectedComponentBatch {
 
           }
           if (count == batch) {
-            println("distinct edges: " + edges.size)
+            //            println("distinct edges: " + edges.size)
             process
             if (vertexPartition) {
-              println("vertexPartition time : " + vpTime)
+              //              println("vertexPartition time : " + vpTime)
               vpTime = 0
             }
             count = 0
@@ -357,7 +360,7 @@ object ConnectedComponentBatch {
           //creating edge RDD and initial msg from input
           for (((node1, node2), time) <- edges.seq.iterator) {
 
-            inputEdgeArray.+=(Edge(node1, node2, time), Edge(node2, node1, time))
+            inputEdgeArray.+=(Edge(node1, node2, time))
 
           }
           for (node1 <- nodes.seq.iterator) {
@@ -365,12 +368,12 @@ object ConnectedComponentBatch {
             inputVertexArray.+=((node1, (Long.MaxValue, heavyString)))
 
           }
-          println("parallelization: "+sc.defaultParallelism)
+          //          println("parallelization: " + sc.defaultParallelism)
           if (isFirst) {
             if (vertexPartition)
-              users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(myVertexPartitioner.fromString("degree", numPartitions)).setName("User RDD").cache()
+              users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(myVertexPartitioner.fromString("degree", numPartitions)).setName("User RDD")
             else
-              users = sc.parallelize(inputVertexArray.result(), numPartitions).setName("User RDD").cache()
+              users = sc.parallelize(inputVertexArray.result(), numPartitions).setName("User RDD")
 
             relationships = sc.parallelize(inputEdgeArray.result(), numPartitions)
 
@@ -387,9 +390,9 @@ object ConnectedComponentBatch {
           } else {
 
             if (vertexPartition)
-              users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(myVertexPartitioner.fromString("degree", numPartitions)).setName("User RDD").cache()
+              users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(myVertexPartitioner.fromString("degree", numPartitions)).setName("User RDD")
             else
-              users = sc.parallelize(inputVertexArray.result(), numPartitions).setName("User RDD").cache()
+              users = sc.parallelize(inputVertexArray.result(), numPartitions).setName("User RDD")
 
             relationships = sc.parallelize(inputEdgeArray.result(), numPartitions)
             val newusers = users.join(graph.vertices).map {
@@ -433,22 +436,21 @@ object ConnectedComponentBatch {
             mypartitioner = new MyPartitionStrategy(degreeBC.value)
 
           }
-
+          val oldgraph = graph
           if (!partionStrategy.equals(""))
             graph = graph.partitionBy(mypartitioner.fromString(partionStrategy), numPartitions).groupEdges((a, b) => Math.max(a, b))
           graph.vertices.setName("gu vertex")
           graph.edges.setName("gu edges")
           graph.cache()
-          if (vertexPartition)
-            graph.vertices.count()
-          //          graph.edges.count()
+          oldgraph.unpersist(blocking = false)
+          oldgraph.unpersistVertices(blocking = false)
 
-          graph = connectedComponent(graph)
-
-          bwCounter.write(bwCounterData.toString())
-          bwCounterData.delete(0, bwCounterData.length());
-          bwCounter.flush()
-
+          graph.vertices.count()
+          graph =new ConnectedComponent(vertexProgramCounter, sendMsgProgramCounter, mergeMsgProgramCounter, vertexProgDelay, sendProgDelay, mergeProgDelay).connectedComponent(graph,200)
+        
+          println("Total Completed in time : " + (new Date().getTime - startimeTotal))
+          println("Total cc time: " + totalPrTime)
+          println("Total vertex Partitioning time: " + totalvpTime)
           val partitiondata = new ListBuffer[Int]()
           if (getReplicationFactor) {
 
@@ -487,11 +489,14 @@ object ConnectedComponentBatch {
           graph.cache()
           inputEdgeArray.clear()
           msgsList.clear()
+          bwCounter.write(bwCounterData.toString())
+          bwCounterData.delete(0, bwCounterData.length());
+          bwCounter.flush()
 
           relationships.unpersist(blocking = false)
           //            logger.info("Done: " + total + " at : " + new Date())
           val rf: Double = BigDecimal(replication.value.toDouble / degree.size).setScale(2, BigDecimal.RoundingMode.HALF_UP).toDouble
-          println("Done: " + total + " at : " + new Date() + " RF: " + rf + " lrsd " + relativeSD)
+          //          println("Done: " + total + " at : " + new Date() + " RF: " + rf + " lrsd " + relativeSD)
           if (total == batch) {
             //first batch add header
             bwtime.write("Batch" + ","
@@ -551,9 +556,7 @@ object ConnectedComponentBatch {
         }
 
         //        logger.info("Completed in time : " + (new Date().getTime - startime))
-        println("Total Completed in time : " + (new Date().getTime - startimeTotal))
-        println("Total Pr time: " + totalPrTime)
-        println("Total vertex Partitioning time: " + totalvpTime)
+
         if (monitorShuffleTime) {
           val json = fromURL(url).mkString
           val stages: List[SparkStage] = parse(json).extract[List[SparkStage]]
@@ -670,9 +673,9 @@ object ConnectedComponentBatch {
           }
           bwjob.close()
         }
-        for (i <- 0 to numPartitions - 1) {
-          println(i + "," + partitionDistribution.get(i).get + "\n")
-        }
+        //        for (i <- 0 to numPartitions - 1) {
+        ////          println(i + "," + partitionDistribution.get(i).get + "\n")
+        //        }
         /*
      * Print the output
      * 
@@ -680,7 +683,7 @@ object ConnectedComponentBatch {
 
         if (writeResult) {
           result = graph.vertices.mapValues((value, text) => value).collect
-          println("writing result")
+          //          println("writing result")
           result.foreach {
             case (vertexId, pr) => {
               //        println("node summary for " + value + " : " + original_value.getNodeSummary.estimate())
@@ -693,64 +696,7 @@ object ConnectedComponentBatch {
           bw.write(output.toString())
           bw.close()
         }
-        def connectedComponent(graph: Graph[(Long, String), Long]): Graph[(Long, String), Long] = {
-          val stime = new Date().getTime
-          val initialMessage = Long.MaxValue
-          val ccGraph = graph.mapVertices { case (vid, x) => (vid, x._2) }.cache
-
-          ccGraph.vertices.count
-          ccGraph.triplets.count
-          val pregelGraph = PregelMon(ccGraph, initialMessage,
-            Int.MaxValue, EdgeDirection.Either)(
-              vertexProgram,
-              sendMessage,
-              messageCombiner)(vertexProgramCounter, sendMsgProgramCounter, mergeMsgProgramCounter)
-          ccGraph.unpersist()
-          prTime = new Date().getTime - stime
-          totalPrTime = totalPrTime + prTime
-          println("CC time: " + (new Date().getTime - stime))
-          pregelGraph
-        }
-        def vertexProgram(id: VertexId, attr: (Long, String), msg: Long): (Long, String) = {
-          if (vertexProgDelay != -1) {
-
-            if (vertexProgDelay == 0) {
-              vertexProgramCounter.add(1)
-            } else {
-              vertexProgramCounter.add(vertexProgDelay)
-              Thread.sleep(vertexProgDelay)
-            }
-          }
-          (math.min(attr._1, msg), attr._2)
-        }
-        def sendMessage(edge: EdgeTriplet[(VertexId, String), Long]): Iterator[(VertexId, VertexId)] = {
-          if (sendProgDelay != -1) {
-            if (sendProgDelay == 0) {
-              sendMsgProgramCounter.add(1)
-            } else {
-              sendMsgProgramCounter.add(sendProgDelay)
-              Thread.sleep(sendProgDelay)
-            }
-          }
-          if (edge.srcAttr._1 < edge.dstAttr._1) {
-            Iterator((edge.dstId, edge.srcAttr._1))
-          } else if (edge.srcAttr._1 > edge.dstAttr._1) {
-            Iterator((edge.srcId, edge.dstAttr._1))
-          } else {
-            Iterator.empty
-          }
-        }
-        def messageCombiner(a: Long, b: Long): Long = {
-          if (mergeProgDelay != -1) {
-            if (mergeProgDelay == 0) {
-              mergeMsgProgramCounter.add(1)
-            } else {
-              mergeMsgProgramCounter.add(mergeProgDelay)
-              Thread.sleep(mergeProgDelay)
-            }
-          }
-          math.min(a, b)
-        }
+        
       } catch {
         case e: Exception => {
           //        logger.error(e)

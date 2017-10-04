@@ -39,7 +39,7 @@ import org.apache.spark.scheduler.SparkListenerApplicationStart
 import org.apache.spark.scheduler.SparkListenerStageCompleted
 import com.ulb.code.wit.util.SparkAppStats.taskDetail
 
-object PageRankBatch {
+object GraphAlgos {
   val tol = 0.01
   val resetProb: Double = 0.15
   val logger = Logger.getLogger(getClass().getName());
@@ -53,21 +53,6 @@ object PageRankBatch {
       val configFile = args(0)
       prop.load(new FileInputStream(configFile))
 
-      //      logger.info("Test Started")
-      //      println("Test Started" + new Date())
-
-      val mode = prop.getProperty("mode", "cluster")
-      val conf = new SparkConf().setAppName("PageRankBatch")
-      conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      conf.registerKryoClasses(Array(classOf[VertexPartitioner], classOf[MyPartitionStrategy]))
-
-      // conf.set("spark.executor.extraJavaOptions", "-XX:+UseCompressedOops")
-
-      if (mode.equals("local")) {
-        conf.setMaster("local[*]")
-      }
-
-      val sc = new SparkContext(conf)
       //      println("spark contest status: " + sc.isStopped)
       val numPartitions = Integer.parseInt(prop.getProperty("partition", "6"))
       var inputfile = prop.getProperty("inputfile", "facebook_reduced.csv")
@@ -77,18 +62,31 @@ object PageRankBatch {
       val mergeProgDelay = Integer.parseInt(prop.getProperty("mergeProgDelay", "1"))
       val sendProgDelay = Integer.parseInt(prop.getProperty("sendProgDelay", "1"))
       val vertexProgDelay = Integer.parseInt(prop.getProperty("vertexProgDelay", "1"))
-      var outputFile = "PR_" + prop.getProperty("outputFile", "facebook_reduced_estimate.csv")
+      val landmarkCount = Integer.parseInt(prop.getProperty("landmarkCount", "100"))
+      val seedForlandMarkSelection = 484348255l
+      var algo = prop.getProperty("algo", "PR")
+      var outputFile = algo + "_" + prop.getProperty("outputFile", "facebook_reduced_estimate.csv")
 
       var jobId = ""
       if (args.length > 2) {
         //override the application properties parameter with command line parameters
         inputfile = args(2)
         partionStrategy = args(3)
-
-        outputFile = "PR_" + inputfile.replace(".csv", "_estimate") + "_" + PR_Itteration + ".csv"
+        algo = args(5)
+        outputFile = algo + "_" + inputfile.replace(".csv", "_estimate") + "_" + PR_Itteration + ".csv"
 
       }
-      if (args.length == 5) jobId = args(4) else jobId = new Date().getTime + ""
+      val mode = prop.getProperty("mode", "cluster")
+      val conf = new SparkConf().setAppName("GraphAlgos-" + algo)
+      conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+      conf.registerKryoClasses(Array(classOf[VertexPartitioner], classOf[MyPartitionStrategy]))
+
+      if (mode.equals("local")) {
+        conf.setMaster("local[*]")
+      }
+
+      val sc = new SparkContext(conf)
+      if (args.length > 5) jobId = args(4) else jobId = new Date().getTime + ""
       val folder = prop.getProperty("folder", "./data/")
       val ofolder = folder + jobId + File.separator
       val oFolderPath = new File(ofolder)
@@ -97,19 +95,14 @@ object PageRankBatch {
       val tmpfolder = prop.getProperty("tmpfolder", "")
       val makeObjectHeavy = Boolean.parseBoolean((prop.getProperty("makeObjectHeavy", "false")))
 
-      val storage = Boolean.parseBoolean((prop.getProperty("storage", "false")))
       val vertexPartition = Boolean.parseBoolean((prop.getProperty("useVertexPartitioner", "false")))
       val writeResult = Boolean.parseBoolean((prop.getProperty("writeResult", "false")))
-      val getReplicationFactor = Boolean.parseBoolean((prop.getProperty("getReplicationFactor", "false")))
-      val hdrfLambda = (prop.getProperty("hdrfLambda", "1")).toDouble
-      val ftime = new File(ofolder + "PR_Time_" + inputfile.replace(".csv", "") + "_" + PR_Itteration + "_" + partionStrategy + "_" + numPartitions + ".csv")
-      val bwtime = new BufferedWriter(new FileWriter(ftime))
       val fCounter = new File(ofolder + outputFile.replace(".csv", "_" + partionStrategy + "_CounterDetail.csv"))
       val bwCounter = new BufferedWriter(new FileWriter(fCounter))
       val bwCounterData = new StringBuffer
       var mypartitioner = new MyPartitionStrategy()
       var myVertexPartitioner = new VertexPartitioner(numPartitions)
-      val globalstats = new GlobalStats(numPartitions, hdrfLambda)
+
       var bwshuffle: BufferedWriter = null
       if (!tmpfolder.equals(""))
         sc.setCheckpointDir(tmpfolder)
@@ -124,10 +117,10 @@ object PageRankBatch {
         var isFirst = true
         val heavyString = if (makeObjectHeavy) ConnectedComponentBatch.getData(folder) else ""
         var inputEdgeArray: ArrayBuilder[Edge[Long]] = ArrayBuilder.make()
-        var inputVertexArray: ArrayBuilder[(Long, Long)] = ArrayBuilder.make()
-        var users: RDD[(Long, Long)] = null
+        var inputVertexArray: ArrayBuilder[(Long, (Long, String))] = ArrayBuilder.make()
+        var users: RDD[(Long, (Long, String))] = null
         var relationships: RDD[Edge[Long]] = null
-        var graph: Graph[Long, Long] = null
+        var graph: Graph[(Long, String), Long] = null
         var total = 0
         var count = 0
         var partitionDistribution = collection.mutable.Map[Int, String]()
@@ -144,13 +137,12 @@ object PageRankBatch {
         var msgsList: ListBuffer[(Long, Long, Long, Int)] = ListBuffer[(Long, Long, Long, Int)]()
         var startime = new Date().getTime
         var startimeTotal = new Date().getTime
-        var partitionlookup = sc.broadcast(globalstats.edgepartitionsummary)
+
         val appid = sc.applicationId
-        val monitorShuffleData = false
-        val monitorShuffleTime = false
-        val monitorCounterData=true
+
+        val monitorCounterData = true
         var masterURL = "localhost"
-        var result: Array[(VertexId, Double)] = null
+        //        var result: Array[(VertexId, Double)] = null
 
         val vertexProgramCounter = new MyAccumulator
 
@@ -171,8 +163,6 @@ object PageRankBatch {
 
           masterURL = args(1)
 
-          val fshuffle = new File(ofolder + "PR_Memory_" + inputfile.replace(".csv", "") + "_" + PR_Itteration + "_" + partionStrategy + "_" + numPartitions + ".csv")
-          bwshuffle = new BufferedWriter(new FileWriter(fshuffle))
         }
         if (monitorCounterData) {
           bwCounterData.append("StageId,StageName,vpCounter,sendCounter,mergeCounter,executorRunTime,executorDeserializeTime,jvmGCTime,"
@@ -355,10 +345,7 @@ object PageRankBatch {
           }
         } // end of for loop
         if (count != 0) {
-          //          if (edges.size - count != 0) {
-          //            println("distinct edges: " + edges.size)
-          //            println("total edges: " + count)
-          //          }
+
           process
         }
 
@@ -372,7 +359,7 @@ object PageRankBatch {
           }
           for (node1 <- nodes.seq.iterator) {
 
-            inputVertexArray.+=((node1, node1))
+            inputVertexArray.+=((node1, (Long.MaxValue, heavyString)))
 
           }
 
@@ -380,40 +367,12 @@ object PageRankBatch {
             users = sc.parallelize(inputVertexArray.result(), numPartitions).partitionBy(myVertexPartitioner.fromString("degree", numPartitions)).setName("User RDD")
           else
             users = sc.parallelize(inputVertexArray.result(), numPartitions).setName("User RDD")
+
           relationships = sc.parallelize(inputEdgeArray.result(), numPartitions)
 
-          if (storage) {
+          graph = Graph(users, relationships, (Long.MaxValue, heavyString))
 
-            graph = Graph(users, relationships, 0l, StorageLevel.MEMORY_ONLY_SER, StorageLevel.MEMORY_ONLY_SER)
-          } else {
-            graph = Graph(users, relationships, 0l)
-          }
-          graph.vertices.setName("g vertex")
-          graph.edges.setName("g edges")
-
-          if (partionStrategy.equals("HDRF")) {
-            edges.foreach {
-              case ((src, dst), t) =>
-                {
-
-                  var temp = nodeneighbours.getOrElse(src, collection.mutable.Set[Long]())
-                  temp.add(dst)
-                  nodeneighbours.put(src, temp)
-                  temp = nodeneighbours.getOrElse(dst, collection.mutable.Set[Long]())
-                  temp.add(src)
-                  nodeneighbours.put(dst, temp)
-
-                  globalstats.nodedegree.put(src, nodeneighbours.getOrElse(src, collection.mutable.Set[Long]()).size)
-                  globalstats.nodedegree.put(dst, nodeneighbours.getOrElse(dst, collection.mutable.Set[Long]()).size)
-                  globalstats.updatePartitionHDRF(src, dst, numPartitions)
-
-                }
-            }
-          }
-          if (partionStrategy.equals("HDRF")) {
-            partitionlookup = sc.broadcast(globalstats.edgepartitionsummary)
-            mypartitioner = new MyPartitionStrategy(partitionlookup.value, null)
-          } else if (partionStrategy.equals("DBH")) {
+          if (partionStrategy.equals("DBH")) {
 
             val degreeBC = sc.broadcast(degree.map(f => (f._1, f._2.size)))
             mypartitioner = new MyPartitionStrategy(degreeBC.value)
@@ -430,120 +389,22 @@ object PageRankBatch {
           oldgraph.unpersistVertices(blocking = false)
 
           graph.vertices.count()
-          result = pageRank(graph, PR_Itteration)
+          println("Total Reading and Partitioning time : " + (new Date().getTime - startimeTotal))
+          if (algo.equals("PR")) {
+            new PageRank(vertexProgramCounter, sendMsgProgramCounter, mergeMsgProgramCounter, vertexProgDelay, sendProgDelay, mergeProgDelay).pageRank(graph, PR_Itteration)
+          } else if (algo.equals("CC")) {
+            new ConnectedComponent(vertexProgramCounter, sendMsgProgramCounter, mergeMsgProgramCounter, vertexProgDelay, sendProgDelay, mergeProgDelay).connectedComponent(graph, PR_Itteration)
+          } else if (algo.equals("SP")) {
+            val landmarks = graph.vertices.map(x => x._1).takeSample(false, landmarkCount, seedForlandMarkSelection)
+            new ShortestPaths(vertexProgramCounter, sendMsgProgramCounter, mergeMsgProgramCounter, vertexProgDelay, sendProgDelay, mergeProgDelay).shortestPath(graph, landmarks, PR_Itteration)
+          } else if (algo.equals("LP")) {
+            new LabelPropagation(vertexProgramCounter, sendMsgProgramCounter, mergeMsgProgramCounter, vertexProgDelay, sendProgDelay, mergeProgDelay).run(graph, PR_Itteration)
+
+          }
+
           println("Total Completed in time : " + (new Date().getTime - startimeTotal))
           //        println("Total Pr time: " + totalPrTime)
           println("Total vertex Partitioning time: " + totalvpTime)
-          if (monitorShuffleTime) {
-            bwCounter.write(bwCounterData.toString())
-            bwCounterData.delete(0, bwCounterData.length());
-            bwCounter.flush()
-            val partitiondata = new ListBuffer[Int]()
-            if (getReplicationFactor) {
-
-              graph.edges.foreachPartition(x => {
-                val nodes: HashSet[Long] = HashSet.empty
-                for (edge <- x) {
-
-                  nodes.add(edge.dstId)
-                  nodes.add(edge.srcId)
-                }
-                replication.add(nodes.size)
-              })
-
-              val partition = graph.edges.mapPartitionsWithIndex((id, iter) => Array((id, iter.size)).iterator, true).collect()
-              for ((id, count) <- partition) {
-                partitiondata += count
-                partitionDistribution.put(id, partitionDistribution.getOrElse(id, "") + count + ",")
-
-              }
-
-            }
-
-            var relativeSD = 0.0
-            if (partitiondata.size > 0) {
-              relativeSD = LoadStatsCalculator.getLoadRelativeStandardDeviation(partitiondata.toList)
-            }
-
-            if (!tmpfolder.equals("")) {
-              if (!graph.isCheckpointed)
-                graph.checkpoint()
-            }
-            //          println("vertex partitioner: " + graph.vertices.partitioner.get)
-
-            graph.vertices.cache()
-            graph.edges.cache()
-            graph.cache()
-            inputEdgeArray.clear()
-            msgsList.clear()
-
-            relationships.unpersist(blocking = false)
-            //            logger.info("Done: " + total + " at : " + new Date())
-            val rf: Double = BigDecimal(replication.value.toDouble / degree.size).setScale(2, BigDecimal.RoundingMode.HALF_UP).toDouble
-            //          println("Done  : " + total + " at time : " + new Date() + " RF: " + rf + " lrsd " + relativeSD + "," + vertexProgramCounter.value + "," + sendMsgProgramCounter.value + "," + mergeMsgProgramCounter.value)
-            if (total == batch) {
-              //first batch add header
-              bwtime.write("Batch" + ","
-                + "Batch Time" + ","
-                + "Replication Factor" + ","
-                + "Relative SD" + ","
-                + "VertexProg Counter" + ","
-                + "SendMsg Counter" + ","
-                + "mergeMsg Counter" + ","
-                + "PR Time" + ","
-                + (if (vertexPartition) "VP Time" else "")
-                + "\n")
-            }
-            bwtime.write(total + ","
-              + (new Date().getTime - startime) + ","
-              + rf + ","
-              + relativeSD + ","
-              + vertexProgramCounter.value + ","
-              + sendMsgProgramCounter.value + ","
-              + mergeMsgProgramCounter.value + ","
-              + prTime + ","
-              + (if (vertexPartition) vpTime else "")
-              + "\n")
-            bwtime.flush()
-            replication.reset()
-            vertexProgramCounter.reset()
-
-            mergeMsgProgramCounter.reset()
-            sendMsgProgramCounter.reset()
-            if (monitorShuffleData) {
-              try {
-                val json = fromURL(url).mkString
-                val stages: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("mapPartitions at GraphImpl.scala:207") }
-                val remoteRead = stages.map(x => (x.stageId, x.name, x.accumulatorUpdates
-                  .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
-                  map(_.value.toLong).sum))
-                remoteRead.foreach(x => {
-                  bwshuffle.write(x._1 + "," + x._2 + "," + x._3 + "\n")
-                })
-                val stagesReduce: List[SparkStage] = parse(json).extract[List[SparkStage]].filter { _.name.equals("reduce at VertexRDDImpl.scala:88") }
-                val remoteReadMsg = stagesReduce.map(x => (x.stageId, x.name, x.accumulatorUpdates
-                  .filter { _.name.equals("internal.metrics.shuffle.read.remoteBytesRead") }.
-                  map(_.value.toLong).sum))
-
-                //             println("stages count: " + stages.map(_.shuffleReadBytes).sum / (1024 * 1024))
-                remoteReadMsg.foreach(x => {
-                  bwshuffle.write(x._1 + "," + x._2 + "," + x._3 + "\n")
-                })
-
-                bwshuffle.flush()
-              } catch {
-
-                case e: Exception => {
-                  println("Error in reading the url:" + url)
-                  println(e.getMessage)
-                }
-              }
-            }
-
-            startime = new Date().getTime
-          }
-
-          //        logger.info("Completed in time : " + (new Date().getTime - startime))
           try {
             val json = fromURL(url).mkString
             val stages: List[SparkStage] = parse(json).extract[List[SparkStage]]
@@ -673,113 +534,14 @@ object PageRankBatch {
           }
 
         }
-
-//        for (i <- 0 to numPartitions - 1) {
-//          //          println(i + "," + partitionDistribution.get(i).get + "\n")
-//        }
-        /*
-     * Print the output
-     * 
-     */
-        if (writeResult) {
-          //          println("writing result")
-          result.foreach {
-            case (vertexId, pr) => {
-              //        println("node summary for " + value + " : " + original_value.getNodeSummary.estimate())
-              output.append(vertexId + "," + pr + "\n")
-
-            }
-          }
-          val f = new File(ofolder + outputFile)
-          val bw = new BufferedWriter(new FileWriter(f))
-          bw.write(output.toString())
-          bw.close()
-        }
-        def pageRank(graph: Graph[Long, Long], maxItteration: Int): Array[(VertexId, Double)] = {
-
-          val pagerankGraph: Graph[(Double, Double), Double] = graph
-            // Associate the degree with each vertex
-            .outerJoinVertices(graph.outDegrees) {
-              (vid, vdata, deg) => deg.getOrElse(0)
-            }
-            // Set the weight on the edges based on the degree
-            .mapTriplets(e => 1.0 / e.srcAttr)
-            // Set the vertex attributes to (initialPR, delta = 0)
-            .mapVertices { (id, attr) =>
-              if (id == -1) (resetProb, Double.NegativeInfinity) else (0.0, 0.0)
-            }
-            .cache()
-          val initialMessage = resetProb / (1.0 - resetProb)
-          val stime = new Date().getTime
-          pagerankGraph.vertices.count()
-          pagerankGraph.triplets.count()
-          val node = PregelMon(pagerankGraph, initialMessage,
-            PR_Itteration, EdgeDirection.Out)(
-              vertexProgram,
-              sendMessage,
-              messageCombiner)(vertexProgramCounter, sendMsgProgramCounter, mergeMsgProgramCounter)
-          val result = node.mapVertices { (id, attr) => (id, attr._1) }.vertices.collect().map(x => (x._1, x._2._2))
-          prTime = new Date().getTime - stime
-          totalPrTime = totalPrTime + prTime
-          println("PR time: " + (new Date().getTime - stime))
-          result
-        }
-        def vertexProgram(id: VertexId, attr: (Double, Double), msgSum: Double): (Double, Double) = {
-          if (vertexProgDelay != -1) {
-            if (vertexProgDelay == 0) {
-              vertexProgramCounter.add(1)
-            } else {
-              vertexProgramCounter.add(vertexProgDelay)
-              Thread.sleep(vertexProgDelay)
-            }
-          }
-          val (oldPR, lastDelta) = attr
-          val newPR = oldPR + (1.0 - resetProb) * msgSum
-          (newPR, newPR - oldPR)
-        }
-        def sendMessage(edge: EdgeTriplet[(Double, Double), Double]) = {
-          if (sendProgDelay != -1) {
-            if (sendProgDelay == 0) {
-              sendMsgProgramCounter.add(1)
-            } else {
-              sendMsgProgramCounter.add(sendProgDelay)
-              Thread.sleep(sendProgDelay)
-            }
-          }
-          if (edge.srcAttr._2 > tol) {
-            Iterator((edge.dstId, edge.srcAttr._2 * edge.attr))
-          } else {
-            Iterator.empty
-          }
-        }
-
-        def messageCombiner(a: Double, b: Double): Double = {
-          if (mergeProgDelay != -1) {
-            if (mergeProgDelay == 0) {
-              mergeMsgProgramCounter.add(1)
-            } else {
-              mergeMsgProgramCounter.add(mergeProgDelay)
-              Thread.sleep(mergeProgDelay)
-            }
-          }
-          a + b
-        }
+        bwCounter.flush()
+        bwCounter.close()
       } catch {
         case e: Exception => {
           //        logger.error(e)
           e.printStackTrace()
         }
 
-      } finally {
-        bwCounter.flush()
-        bwCounter.close()
-        bwtime.flush()
-        bwtime.close()
-        if (bwshuffle != null) {
-          bwshuffle.flush()
-          bwshuffle.close()
-        }
-        // sc.stop()
       }
     } catch {
       case e: Exception => {
@@ -788,29 +550,8 @@ object PageRankBatch {
       }
 
     }
-    //    println("Finished exiting")
+    println("Finished exiting")
     System.exit(1)
-
-    def getUBHPartition(src: Long, dst: Long, numParts: Int, nodedegree: collection.mutable.Map[Long, Int], nodeUpdate: scala.collection.immutable.Map[Long, Int], nodeReplication: scala.collection.Map[Long, Int]): (Long, Int) = {
-      val srcUpdateCount = nodeUpdate.getOrElse(src, 0)
-      val dstUpdateCount = nodeUpdate.getOrElse(dst, 0)
-      val srcReplicationCount = nodeReplication.getOrElse(src, 0)
-      val dstReplicationCount = nodeReplication.getOrElse(dst, 0)
-      if ((srcUpdateCount * srcReplicationCount) > (dstUpdateCount * dstReplicationCount)) {
-        (dst, math.abs(src.hashCode()) % numParts)
-      } else if ((srcUpdateCount * srcReplicationCount) < (dstUpdateCount * dstReplicationCount)) {
-        (src, math.abs(dst.hashCode()) % numParts)
-      } else {
-        //if update count is same follow degree based approach
-        val srcDegree = nodedegree.getOrElse(src, 0)
-        val dstDegree = nodedegree.getOrElse(dst, 0)
-        if (srcDegree < dstDegree) {
-          (dst, math.abs(src.hashCode()) % numParts)
-        } else {
-          (src, math.abs(dst.hashCode()) % numParts)
-        }
-      }
-    }
   }
 
 }

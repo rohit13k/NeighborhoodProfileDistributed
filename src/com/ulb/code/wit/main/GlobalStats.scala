@@ -3,7 +3,7 @@ package com.ulb.code.wit.main
 import java.util.Random
 import java.io.Serializable
 
-class GlobalStats(val partitioncount: Int, val lambda: Double) extends Serializable {
+class GlobalStats(val partitioncount: Int, val lambda: Double=1) extends Serializable {
   val epsilon = 1;
   var partitions = collection.mutable.Map[Int, collection.mutable.Set[Long]]()
   var maxload = 0
